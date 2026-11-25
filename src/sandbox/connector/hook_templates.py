@@ -283,6 +283,115 @@ if __name__ == "__main__":
 '''
 
 
+USERPROMPTSUBMIT_STUB = r'''#!/usr/bin/env python3
+"""Sandbox connector UserPromptSubmit hook — saves the latest user prompt.
+
+Writes the prompt text (capped at 2000 chars) atomically to
+``.sandbox/state/task.txt``.  Never blocks the prompt: on any error it
+exits silently with exit 0 and writes an audit entry.
+"""
+import json
+import os
+import sys
+import tempfile
+
+
+def _find_sandbox(start):
+    cur = os.path.abspath(start)
+    while True:
+        if os.path.isdir(os.path.join(cur, ".sandbox")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def main():
+    raw = sys.stdin.read()
+    try:
+        payload = json.loads(raw) if raw.strip() else {}
+    except Exception:
+        payload = {}
+
+    cwd = payload.get("cwd") or os.getcwd()
+    root = _find_sandbox(cwd) or _find_sandbox(os.path.dirname(os.path.abspath(__file__)))
+    if root is None:
+        sys.exit(0)
+
+    prompt = ""
+    try:
+        # Claude Code UserPromptSubmit payload contains the prompt text
+        hso = payload.get("hookSpecificInput", {})
+        prompt = hso.get("userPrompt", "") or ""
+        if not prompt:
+            prompt = payload.get("prompt", "") or ""
+    except Exception:
+        pass
+
+    if not prompt:
+        # No prompt to save
+        out = {
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+            }
+        }
+        sys.stdout.write(json.dumps(out))
+        sys.stdout.flush()
+        sys.exit(0)
+
+    # Cap at 2000 chars
+    prompt = prompt[:2000]
+
+    state_dir = os.path.join(root, ".sandbox", "state")
+    task_path = os.path.join(state_dir, "task.txt")
+
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        # Atomic write: write to temp then rename
+        fd, tmp = tempfile.mkstemp(dir=state_dir, prefix=".task_", suffix=".tmp")
+        try:
+            os.write(fd, prompt.encode("utf-8"))
+            os.close(fd)
+            os.replace(tmp, task_path)
+        except Exception:
+            os.close(fd) if not os.get_inheritable(fd) else None
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except Exception:
+        # Never block the prompt: fail silently
+        # Try to write an audit entry
+        try:
+            audit_dir = os.path.join(root, ".sandbox", "audit")
+            os.makedirs(audit_dir, exist_ok=True)
+            import time
+            entry = json.dumps({
+                "event": "user_prompt_hook_error",
+                "ts": time.time(),
+            })
+            with open(os.path.join(audit_dir, "hook_errors.jsonl"), "a", encoding="utf-8") as f:
+                f.write(entry + "\n")
+        except Exception:
+            pass
+
+    out = {
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+        }
+    }
+    sys.stdout.write(json.dumps(out))
+    sys.stdout.flush()
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
 SESSIONSTART_STUB = r'''#!/usr/bin/env python3
 """Sandbox connector SessionStart hook — injects sandbox awareness into context.
 

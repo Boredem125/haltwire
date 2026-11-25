@@ -56,6 +56,9 @@ _WRITE_ONLY_SEQS: tuple[tuple[str, ...], ...] = ((".git",),)  # all of .git/**: 
 # Never readable by the agent: reviewer signing seeds (and, later, device keys).
 _KEY_SEQS: tuple[tuple[str, ...], ...] = (
     (".sandbox", "state", "keys"), (".sandbox", "state", "device"),
+    (".sandbox", "state", "canaries.json"),
+    (".sandbox", "state", "task.txt"),
+    (".sandbox", "state", "canary_taint.json"),
 )
 # Agent configuration: writing these could add an MCP server, rename one to
 # borrow the sandbox's trust, or switch the hooks off.
@@ -63,7 +66,7 @@ _AGENT_CONFIG_GLOBS = (".mcp.json", ".claude/settings*.json")
 # Approver CLI subcommands: approvals come from a human's terminal only.
 _APPROVER_SUBCOMMANDS = frozenset(
     {"approve", "deny", "watch", "grant", "serve", "approve-change", "keys",
-     "signer", "enroll", "unenroll", "sync"}
+     "signer", "enroll", "unenroll", "sync", "unfreeze"}
 )
 # `2>&1`, `>/dev/null`: redirects that do not write to a file.
 _BENIGN_REDIRECT_RE = re.compile(
@@ -1068,8 +1071,11 @@ def _seg_path_hit(seg: shellwords.Segment, deadline: float, dot_rule: bool = Tru
     return None
 
 
+_CLI_NAMES = {"sandbox", "haltwire"}
+
+
 def _is_sandbox_cli(words: list[str], j: int) -> bool:
-    """Is words[j] the sandbox CLI (binary, script path or ``-m`` module)?"""
+    """Is words[j] the sandbox/haltwire CLI (binary, script path or ``-m`` module)?"""
     w = words[j]
     for cand in (w, w.replace("\\", "").replace("^", "")):
         comps = [c.casefold() for c in re.split(r"[\\/]", cand) if c]
@@ -1077,16 +1083,16 @@ def _is_sandbox_cli(words: list[str], j: int) -> bool:
         for ext in (".exe", ".cmd", ".bat", ".ps1"):
             if base.endswith(ext):
                 base = base[: -len(ext)]
-        if base == "sandbox":
+        if base in _CLI_NAMES:
             return True
-        if base.endswith(".py") and "sandbox" in comps[:-1]:
+        if base.endswith(".py") and any(n in comps[:-1] for n in _CLI_NAMES):
             return True  # python src/sandbox/cli/main.py
-        # `-m sandbox.cli`, `-Im sandbox`, `-msandbox`
+        # `-m sandbox.cli`, `-Im sandbox`, `-msandbox`, same for haltwire
         m = re.fullmatch(r"-[A-Za-z]*m(.*)", cand, re.S)
-        if m and m.group(1).casefold().split(".")[0] == "sandbox":
+        if m and m.group(1).casefold().split(".")[0] in _CLI_NAMES:
             return True
         if j > 0 and re.fullmatch(r"-[A-Za-z]*m", words[j - 1].replace("^", "")):
-            if base.split(".")[0] == "sandbox":
+            if base.split(".")[0] in _CLI_NAMES:
                 return True
     return False
 
@@ -1101,9 +1107,10 @@ def _seg_approver(seg: shellwords.Segment) -> str | None:
     """
     raws = [w.raw for w in seg.words]
     for j in range(len(raws)):
-        # Cheap prefilter: the CLI is named `sandbox` (any path, any case) or is a
-        # `-m` flag cluster such as `-Im`; any other word cannot be it.
-        if not raws[j].startswith("-") and "sandbo" not in raws[j].casefold().translate(_PATH_FOLD):
+        # Cheap prefilter: the CLI is named `sandbox` or `haltwire` (any path, any
+        # case) or is a `-m` flag cluster such as `-Im`; any other word cannot be it.
+        _low_folded = raws[j].casefold().translate(_PATH_FOLD)
+        if not raws[j].startswith("-") and "sandbo" not in _low_folded and "haltwir" not in _low_folded:
             continue
         if not _is_sandbox_cli(raws, j):
             continue

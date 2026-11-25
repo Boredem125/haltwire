@@ -38,6 +38,7 @@ def register(cli: click.Group) -> None:
     from sandbox.cli.keys_cmds import keys_group
 
     cli.add_command(keys_group)
+    cli.add_command(unfreeze_cmd)
 
 
 @click.group("governance")
@@ -325,16 +326,22 @@ def semantic_clear_taint_cmd(path: str, reviewer: str, reason: str) -> None:
 @click.option("--auto-allow", is_flag=True, help="Let the connector emit allow decisions (bypasses Claude Code's own prompt).")
 @click.option("--versioning/--no-versioning", default=True,
               help="Record the policy as the first approved version (change control and drift detection).")
-def init_cmd(path: str, claude: bool, mcp: bool, codex: bool, auto_allow: bool, versioning: bool) -> None:
+@click.option("--no-canaries", is_flag=True, help="Skip planting canary tripwire files.")
+def init_cmd(path: str, claude: bool, mcp: bool, codex: bool, auto_allow: bool, versioning: bool, no_canaries: bool) -> None:
     """Initialize the sandbox connector in a folder."""
-    from sandbox.connector.install import init
+    from sandbox.connector.install import init_folder
 
     from sandbox.connector.install import InstallLayoutError
 
     try:
-        result = init(path, claude=claude, mcp=mcp, codex=codex, auto_allow=auto_allow)
+        result = init_folder(path, claude=claude, mcp=mcp, codex=codex, auto_allow=auto_allow, no_canaries=no_canaries)
     except InstallLayoutError as exc:
         raise click.ClickException(str(exc)) from exc
+
+    if result.get("canaries_planted"):
+        click.echo("  canaries: planted (tripwire protection active)")
+    elif not no_canaries:
+        click.echo("  canaries: failed to plant (tripwire inactive)", err=True)
     for warning in result.get("warnings", []):
         click.echo(f"WARNING: {warning}", err=True)
     click.echo(f"Sandbox connector initialized in {result['root']}")
@@ -429,6 +436,30 @@ def status_cmd(path: str, as_json: bool) -> None:
     version = version_info(layout)
     managed = is_managed(layout)
     locked = is_locked(layout)
+    # Quarantine (tripwire) state
+    _qf = layout.state_dir / "quarantine.json"
+    quarantined = _qf.is_file()
+    quarantine_reason = ""
+    quarantine_kind = "tripwire"  # fallback when 'kind' is missing
+    if quarantined:
+        try:
+            _qdata = _json.loads(_qf.read_text(encoding="utf-8"))
+            quarantine_reason = _qdata.get("reason", "")
+            quarantine_kind = _qdata.get("kind", "tripwire")
+        except Exception:  # noqa: BLE001
+            quarantine_reason = "unknown"
+
+    # Canary state
+    _canary_file = layout.state_dir / "canaries.json"
+    canaries_active = _canary_file.is_file()
+    canary_count = 0
+    if canaries_active:
+        try:
+            _cdata = _json.loads(_canary_file.read_text(encoding="utf-8"))
+            canary_count = len(_cdata.get("_planted_hashes", {}))
+        except Exception:  # noqa: BLE001
+            pass
+
     if as_json:
         data = {
             "root": str(layout.root),
@@ -438,6 +469,10 @@ def status_cmd(path: str, as_json: bool) -> None:
             "pending": pending,
             "managed": managed,
             "locked": locked,
+            "frozen": quarantined,
+            "frozen_reason": quarantine_reason,
+            "frozen_kind": quarantine_kind if quarantined else "",
+            "canaries": {"active": canaries_active, "count": canary_count},
         }
         # T9a: additive top-level keys for managed workspaces
         if managed:
@@ -454,6 +489,12 @@ def status_cmd(path: str, as_json: bool) -> None:
     click.echo(f"Runners:  {_describe_runners(layout)}")
     click.echo(f"Managed:  {'yes' if managed else 'no'}")
     click.echo(f"Locked:   {'yes' if locked else 'no'}")
+    if quarantined:
+        click.echo(f"FROZEN:   yes ({quarantine_kind})")
+    if canaries_active:
+        click.echo(f"Canaries: {canary_count} planted")
+    else:
+        click.echo("Canaries: disabled")
     click.echo(f"Pending:  {len(pending)}")
     # T9a: load decision state for per-request refusals
     ds_entries = {}
@@ -1366,7 +1407,7 @@ def explain_cmd(request_id: str, path: str, as_json: bool) -> None:
 @click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
 def uninstall_cmd(path: str, keep_data: bool, yes: bool) -> None:
     """Remove the connector from a folder (hooks + optionally data)."""
-    from sandbox.connector.install import uninstall
+    from sandbox.connector.install import uninstall_folder
 
     if not keep_data and not yes:
         click.confirm(
@@ -1374,12 +1415,115 @@ def uninstall_cmd(path: str, keep_data: bool, yes: bool) -> None:
             abort=True,
         )
 
-    result = uninstall(path, keep_data=keep_data)
+    result = uninstall_folder(path, keep_data=keep_data, warn_fn=lambda m: click.echo(f"  WARNING: {m}", err=True))
     click.echo(f"Uninstalled connector from {result['root']}")
     click.echo(f"  settings entry removed: {result['settings_entry_removed']}")
     click.echo(f"  data removed:           {result['data_removed']}")
     if keep_data:
         click.echo("  (.sandbox/ data kept - remove manually if desired)")
+
+
+@click.command("unfreeze")
+@click.option("--path", default=".", help="Project folder (or any parent).")
+@click.option("--reviewer", required=True, help="Reviewer id with a signing key.")
+def unfreeze_cmd(path: str, reviewer: str) -> None:
+    """Clear the quarantine flag after a tripwire violation.
+
+    Requires the approver signing key; writes a signed audit record.
+    """
+    import json as _json
+
+    from sandbox.connector.audit import FolderAudit
+    from sandbox.connector.layout import FolderLayout
+    from sandbox.connector.signing import sign_record
+
+    layout = FolderLayout.discover(path)
+    if layout is None:
+        click.echo("No .sandbox/ found here or above. Run `sandbox init` first.")
+        raise SystemExit(1)
+
+    qf = layout.state_dir / "quarantine.json"
+    taint_file = layout.state_dir / "canary_taint.json"
+    if not qf.is_file() and not taint_file.is_file():
+        click.echo("Workspace is not frozen / not quarantined, and has no canary taint.")
+        return
+
+    # Load the quarantine reason
+    qdata: dict = {}
+    if qf.is_file():
+        try:
+            qdata = _json.loads(qf.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            qdata = {}
+
+    # Bind to pinned key (same pattern as approval.approve): reject when
+    # there is no pinned key or the key doesn't match.  Fail closed.
+    from sandbox.connector import keyhome
+
+    try:
+        pinned = keyhome.get_pinned_key(layout, reviewer)
+    except keyhome.KeyHomeError as exc:
+        click.echo(f"Key home unavailable: {exc}", err=True)
+        click.echo("Run `sandbox keys pin <reviewer>` first, or `sandbox init` to set up.")
+        raise SystemExit(1)
+    if pinned is None:
+        click.echo(
+            f"Reviewer {reviewer!r} has no pinned key in this workspace.\n"
+            "Pin a key first with `sandbox keys pin <reviewer>`, "
+            "or run `sandbox init` to set up the workspace.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    # Write a signed audit record
+    record = {
+        "event": "unfreeze",
+        "reviewer_id": reviewer,
+        "quarantine_reason": qdata.get("reason", ""),
+        "quarantine_trip_kind": qdata.get("trip_kind", ""),
+        "was_frozen": qf.is_file(),
+        "cleared_canary_taint": taint_file.is_file(),
+        "unfrozen_at": __import__("time").time(),
+    }
+    try:
+        sign_record(layout, reviewer, record)
+    except Exception as exc:
+        click.echo(f"Cannot sign unfreeze record for reviewer {reviewer!r}: {exc}", err=True)
+        raise SystemExit(1)
+
+    # Verify the signed key matches the pinned key
+    if record.get("signer_public_key") != pinned:
+        click.echo(
+            f"Key mismatch: the signing key for {reviewer!r} does not match the pinned key.\n"
+            "Re-pin with `sandbox keys pin <reviewer>` if the key was rotated.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    # Read session id
+    session_id = ""
+    try:
+        session = _json.loads(layout.session_file.read_text(encoding="utf-8"))
+        session_id = session.get("session_id", "")
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Append to audit chain
+    audit = FolderAudit(layout.audit_dir, session_id or "unfreeze")
+    audit.append(record)
+
+    # Clear the flag and any canary taint (PostToolUse output hit)
+    if qf.is_file():
+        qf.unlink()
+    if taint_file.is_file():
+        taint_file.unlink()
+
+    # Also clear the legacy flag if present
+    legacy = layout.base / "tripwire_stop"
+    if legacy.is_file():
+        legacy.unlink()
+
+    click.echo(f"Unfrozen. Signed by {reviewer}. Audit record written.")
 
 
 @click.group("policy")

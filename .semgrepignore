@@ -1,0 +1,9 @@
+# Semgrep exclusions: narrowly scoped to arena demo recordings only.
+#
+# These JSON files are replayed attack sessions containing intentional fake
+# canary credentials (Stripe-shaped, AWS-shaped) used as bait that the
+# attacking agent steals.  Every secret-shaped value targets evil.example
+# domains and is documented as fake in arena/duel.py FAKE_ENV.
+#
+# Real credentials must NEVER be added to these paths.
+arena/recordings/

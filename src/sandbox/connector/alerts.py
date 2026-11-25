@@ -47,6 +47,9 @@ _ALWAYS = {
     "decision_refused": "decision_refused",
     "decision_apply_failed": "decision_apply_failed",
     "decision_alerts_suppressed": "decision_alerts_suppressed",
+    # Tripwire and AI intent judge alerts.
+    "tripwire_stop": "tripwire_stop",
+    "ai_flag": "ai_flag",
 }
 # Escalations alert only when critical or dual control.
 _ESCALATIONS = {"shell_escalated", "tool_call_escalated", "escalate_redirect"}
@@ -101,11 +104,77 @@ def build(layout: FolderLayout, session_id: str, record: dict[str, Any], kind: s
     return alert
 
 
+import re as _re
+
+# Patterns for canary-shaped values to mask in alerts
+_CANARY_PATTERNS = [
+    _re.compile(r"AKIA[0-9A-Z]{16}"),                     # AWS access key
+    _re.compile(r"sk_(live|test)_\w{20,}"),               # Stripe key
+    _re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----"),
+    _re.compile(r"\w+://[^:]+:[^@]+@[^\s]+"),             # scheme://user:pass@host
+]
+
+
+def _mask_secrets(text: str) -> str:
+    """Replace canary-shaped values with [REDACTED]."""
+    for pat in _CANARY_PATTERNS:
+        text = pat.sub("[REDACTED]", text)
+    return text
+
+
+def _build_gchat_card(payload: dict[str, Any]) -> dict[str, Any]:
+    """Build a Google Chat cardsV2 message for tripwire/AI alerts.
+
+    Canary-shaped values are masked, not just truncated.
+    """
+    kind = payload.get("kind", "alert")
+    title = f"Agent {kind.upper()}"
+    subtitle = _mask_secrets(_short(payload.get("reason") or payload.get("event") or ""))
+    sections = []
+    widgets = []
+    for key in ("tool", "command", "reason_code", "risk_band", "session_id", "folder"):
+        val = payload.get(key)
+        if val is not None:
+            widgets.append({
+                "decoratedText": {
+                    "topLabel": key,
+                    "text": _mask_secrets(_short(val)),
+                }
+            })
+    if widgets:
+        sections.append({"widgets": widgets})
+
+    return {
+        "cardsV2": [{
+            "cardId": f"alert-{payload.get('kind', 'unknown')}",
+            "card": {
+                "header": {"title": title, "subtitle": subtitle},
+                "sections": sections,
+            },
+        }],
+        "text": _mask_secrets(_summary(payload)),
+    }
+
+
+def _is_gchat_url(url: str) -> bool:
+    """Check if the webhook URL is a Google Chat webhook."""
+    try:
+        from urllib.parse import urlparse
+        return urlparse(url).hostname == "chat.googleapis.com"
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _post(url: str, payload: dict[str, Any], timeout: float) -> str:
     """POST JSON; return "" on success or a short error."""
     if not url.lower().startswith(("https://", "http://")):
         return "webhook URL must be http(s)"
-    body = json.dumps({"text": _summary(payload), "alert": payload}).encode("utf-8")
+    # Google Chat webhook: use cardsV2 format
+    if _is_gchat_url(url):
+        body_dict = _build_gchat_card(payload)
+    else:
+        body_dict = {"text": _summary(payload), "alert": payload}
+    body = json.dumps(body_dict).encode("utf-8")
     # The URL is the operator's own env var, never policy.json or agent input.
     req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
     try:

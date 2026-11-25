@@ -1,5 +1,12 @@
 // Tests for bin/haltwire.js -- node:test, no network, cross-platform.
 // Fake uvx/pipx executables record argv to a file so we can assert.
+//
+// On POSIX, the fakes are shell scripts that forward args to node via --.
+// On Windows, we cannot cheaply create a real .exe that records arguments
+// (node.exe rejects unknown flags like --from before any JS runs), so the
+// integration tests that need arg recording are POSIX-only.  Windows CI
+// exercises the resolver unit tests, the .cmd refusal path, and the
+// error / help paths.
 "use strict";
 
 const { describe, it, beforeEach } = require("node:test");
@@ -15,7 +22,7 @@ const { execFileSync } = require("node:child_process");
 
 const IS_WIN = process.platform === "win32";
 const NODE = process.execPath;
-// Directory containing the node binary -- needed in PATH for .cmd shims
+// Directory containing the node binary -- needed in PATH
 const NODE_DIR = path.dirname(NODE);
 
 // Temp root: TMP/TEMP if set, else the OS temp dir
@@ -28,20 +35,13 @@ function mkTmp(label) {
 
 /**
  * Build a fake executable in dir that writes JSON {argv} to outFile.
- * On Windows we create a .cmd shim; on POSIX a shell script.
+ * POSIX only -- on Windows there is no easy way to build a recording .exe
+ * (node.exe rejects unknown flags before any JS runs).
  */
 function writeFakeExe(dir, name, outFile, exitCode) {
   if (exitCode === undefined) exitCode = 0;
   if (IS_WIN) {
-    var cmd = path.join(dir, name + ".cmd");
-    // Use the full path to node so we don't depend on node being on PATH
-    var script = '@echo off\r\n"' + NODE + '" -e "' +
-      "fs=require('fs');" +
-      "fs.writeFileSync(String.raw`" + outFile + "`,JSON.stringify({argv:process.argv.slice(1)}));" +
-      "process.exit(" + exitCode + ")" +
-      '" -- %*\r\n';
-    fs.writeFileSync(cmd, script);
-    return cmd;
+    throw new Error("writeFakeExe is not supported on Windows");
   }
   var sh = path.join(dir, name);
   var escaped = outFile.replace(/'/g, "'\\''");
@@ -49,19 +49,18 @@ function writeFakeExe(dir, name, outFile, exitCode) {
     "fs=require('fs');" +
     "fs.writeFileSync('" + escaped + "',JSON.stringify({argv:process.argv.slice(1)}));" +
     "process.exit(" + exitCode + ")" +
-    '" "$@"\n';
+    '" -- "$@"\n';
   fs.writeFileSync(sh, body, { mode: 0o755 });
   return sh;
 }
 
 /**
  * Build a fake executable that exits with the given code, writes no output file.
+ * POSIX only.
  */
 function writeFakeExeCode(dir, name, exitCode) {
   if (IS_WIN) {
-    var cmd = path.join(dir, name + ".cmd");
-    fs.writeFileSync(cmd, "@echo off\r\nexit /b " + exitCode + "\r\n");
-    return cmd;
+    throw new Error("writeFakeExeCode is not supported on Windows");
   }
   var sh = path.join(dir, name);
   fs.writeFileSync(sh, "#!/bin/sh\nexit " + exitCode + "\n", { mode: 0o755 });
@@ -79,7 +78,7 @@ function run(args, env, opts) {
     TEMP: TMPBASE,
   }, env);
 
-  // Always include the node binary dir so .cmd shims work
+  // Always include the node binary dir
   if (merged.PATH && merged.PATH.indexOf(NODE_DIR) === -1) {
     merged.PATH = merged.PATH + path.delimiter + NODE_DIR;
   }
@@ -114,7 +113,8 @@ describe("_resolveRunner (unit)", function () {
     var tmp = mkTmp("resolver-uvx");
     try {
       if (IS_WIN) {
-        fs.writeFileSync(path.join(tmp, "uvx.cmd"), "@echo off\r\n");
+        // The resolver only accepts .exe on Windows (not .cmd/.bat)
+        fs.writeFileSync(path.join(tmp, "uvx.exe"), "");
       } else {
         fs.writeFileSync(path.join(tmp, "uvx"), "#!/bin/sh\n", { mode: 0o755 });
       }
@@ -133,9 +133,21 @@ describe("_resolveRunner (unit)", function () {
       fs.writeFileSync(path.join(tmp, "uvx.exe"), "");
       var result = mod._resolveRunner(tmp);
       assert.equal(result.runner, "uvx");
-      // On Windows, .exe is in PATHEXT so should be found
       assert.ok(result.path.toLowerCase().endsWith("uvx.exe"),
         "expected path ending in uvx.exe, got: " + result.path);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores .cmd on Windows (metacharacter safety)", { skip: !IS_WIN && "Windows only" }, function () {
+    var tmp = mkTmp("resolver-cmd-refused");
+    try {
+      // Only a .cmd exists -- the resolver must not return it
+      fs.writeFileSync(path.join(tmp, "uvx.cmd"), "@echo off\r\n");
+      var result = mod._resolveRunner(tmp);
+      assert.equal(result, null, ".cmd must not be accepted");
+      assert.ok(mod._resolveRunner._cmdFallback, "should record the .cmd as a fallback hint");
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
@@ -145,7 +157,7 @@ describe("_resolveRunner (unit)", function () {
     var tmp = mkTmp("resolver-pipx");
     try {
       if (IS_WIN) {
-        fs.writeFileSync(path.join(tmp, "pipx.cmd"), "@echo off\r\n");
+        fs.writeFileSync(path.join(tmp, "pipx.exe"), "");
       } else {
         fs.writeFileSync(path.join(tmp, "pipx"), "#!/bin/sh\n", { mode: 0o755 });
       }
@@ -171,6 +183,10 @@ describe("_resolveRunner (unit)", function () {
 // Integration tests (spawned process)
 // ---------------------------------------------------------------------------
 
+// Tests that need a fake runner exe: POSIX only (we cannot create a real
+// .exe that records arbitrary argv on Windows without a compiler).
+var NEEDS_FAKE_RUNNER = IS_WIN && "needs a fake runner .exe (POSIX only)";
+
 describe("haltwire CLI (integration)", function () {
   var fakeDir;
   var argvFile;
@@ -183,7 +199,7 @@ describe("haltwire CLI (integration)", function () {
 
   // --- args pass-through ---
 
-  it("passes arbitrary args through to uvx", function () {
+  it("passes arbitrary args through to uvx", { skip: NEEDS_FAKE_RUNNER }, function () {
     writeFakeExe(fakeDir, "uvx", argvFile);
     var r = run(["verify", "--verbose"], { PATH: fakeDir });
     assert.equal(r.status, 0, "stderr: " + r.stderr);
@@ -198,7 +214,7 @@ describe("haltwire CLI (integration)", function () {
 
   // --- init -> init . ---
 
-  it("maps 'init' with no path to 'haltwire init .'", function () {
+  it("maps 'init' with no path to 'haltwire init .'", { skip: NEEDS_FAKE_RUNNER }, function () {
     writeFakeExe(fakeDir, "uvx", argvFile);
     var r = run(["init"], { PATH: fakeDir });
     assert.equal(r.status, 0, "stderr: " + r.stderr);
@@ -209,7 +225,7 @@ describe("haltwire CLI (integration)", function () {
     fs.rmSync(fakeDir, { recursive: true, force: true });
   });
 
-  it("does NOT append . when init already has a path", function () {
+  it("does NOT append . when init already has a path", { skip: NEEDS_FAKE_RUNNER }, function () {
     writeFakeExe(fakeDir, "uvx", argvFile);
     var r = run(["init", "/some/path"], { PATH: fakeDir });
     assert.equal(r.status, 0, "stderr: " + r.stderr);
@@ -226,7 +242,7 @@ describe("haltwire CLI (integration)", function () {
 
   // --- no args -> --help ---
 
-  it("runs haltwire --help when invoked with no args", function () {
+  it("runs haltwire --help when invoked with no args", { skip: NEEDS_FAKE_RUNNER }, function () {
     writeFakeExe(fakeDir, "uvx", argvFile);
     var r = run([], { PATH: fakeDir });
     assert.equal(r.status, 0, "stderr: " + r.stderr);
@@ -238,7 +254,7 @@ describe("haltwire CLI (integration)", function () {
 
   // --- exit code propagation ---
 
-  it("propagates a non-zero exit code from uvx", function () {
+  it("propagates a non-zero exit code from uvx", { skip: NEEDS_FAKE_RUNNER }, function () {
     writeFakeExeCode(fakeDir, "uvx", 42);
     var r = run(["verify"], { PATH: fakeDir });
     assert.equal(r.status, 42);
@@ -261,9 +277,22 @@ describe("haltwire CLI (integration)", function () {
     }
   });
 
+  // --- .cmd refusal on Windows ---
+
+  it("refuses .cmd runner with helpful message", { skip: !IS_WIN && "Windows only" }, function () {
+    // Only a .cmd exists -- should refuse and mention .exe requirement
+    fs.writeFileSync(path.join(fakeDir, "uvx.cmd"), "@echo off\r\n");
+    var r = run(["verify"], { PATH: fakeDir });
+    assert.equal(r.status, 1);
+    var output = r.stdout + r.stderr;
+    assert.ok(output.includes("uvx.exe"), "should mention needing uvx.exe");
+    assert.ok(output.includes(".cmd"), "should mention the .cmd it found");
+    fs.rmSync(fakeDir, { recursive: true, force: true });
+  });
+
   // --- pipx fallback ---
 
-  it("uses pipx when uvx is not found", function () {
+  it("uses pipx when uvx is not found", { skip: NEEDS_FAKE_RUNNER }, function () {
     writeFakeExe(fakeDir, "pipx", argvFile);
     var r = run(["verify"], { PATH: fakeDir });
     assert.equal(r.status, 0, "stderr: " + r.stderr);
@@ -278,7 +307,7 @@ describe("haltwire CLI (integration)", function () {
 
   // --- HALTWIRE_REF override ---
 
-  it("uses HALTWIRE_REF to override the git ref", function () {
+  it("uses HALTWIRE_REF to override the git ref", { skip: NEEDS_FAKE_RUNNER }, function () {
     writeFakeExe(fakeDir, "uvx", argvFile);
     var r = run(["verify"], { PATH: fakeDir, HALTWIRE_REF: "my-branch" });
     assert.equal(r.status, 0, "stderr: " + r.stderr);
@@ -289,7 +318,7 @@ describe("haltwire CLI (integration)", function () {
     fs.rmSync(fakeDir, { recursive: true, force: true });
   });
 
-  it("rejects HALTWIRE_REF with invalid characters", function () {
+  it("rejects HALTWIRE_REF with invalid characters", { skip: NEEDS_FAKE_RUNNER }, function () {
     writeFakeExe(fakeDir, "uvx", argvFile);
     var r = run(["verify"], { PATH: fakeDir, HALTWIRE_REF: "foo;rm -rf /" });
     assert.equal(r.status, 1);
@@ -300,7 +329,7 @@ describe("haltwire CLI (integration)", function () {
     fs.rmSync(fakeDir, { recursive: true, force: true });
   });
 
-  it("accepts HALTWIRE_REF with dots, slashes, dashes, underscores", function () {
+  it("accepts HALTWIRE_REF with dots, slashes, dashes, underscores", { skip: NEEDS_FAKE_RUNNER }, function () {
     writeFakeExe(fakeDir, "uvx", argvFile);
     var r = run(["verify"], { PATH: fakeDir, HALTWIRE_REF: "v1.2.3-rc_1/beta" });
     assert.equal(r.status, 0, "stderr: " + r.stderr);
@@ -357,7 +386,7 @@ describe("haltwire CLI (integration)", function () {
 
   // --- --from spec format ---
 
-  it("uvx receives --from with correct git+https spec", function () {
+  it("uvx receives --from with correct git+https spec", { skip: NEEDS_FAKE_RUNNER }, function () {
     writeFakeExe(fakeDir, "uvx", argvFile);
     var r = run(["status"], { PATH: fakeDir });
     assert.equal(r.status, 0, "stderr: " + r.stderr);
@@ -372,7 +401,7 @@ describe("haltwire CLI (integration)", function () {
     fs.rmSync(fakeDir, { recursive: true, force: true });
   });
 
-  it("pipx receives --spec with correct git+https spec", function () {
+  it("pipx receives --spec with correct git+https spec", { skip: NEEDS_FAKE_RUNNER }, function () {
     writeFakeExe(fakeDir, "pipx", argvFile);
     var r = run(["status"], { PATH: fakeDir });
     assert.equal(r.status, 0, "stderr: " + r.stderr);

@@ -19,3 +19,63 @@ c7526b991fa9fb823560e1a77ad998813855371f:ee/tests/test_m2_t13_web.py:generic-api
 # fixture (extra test 10). The line carries gitleaks:allow since c2; this entry
 # covers the c1 commit in history. Not a credential.
 b99c0e6bdd4e506583cd1e6d1314d3ce39be95f7:tests/security/test_m2_script_binding.py:generic-api-key:1647
+
+# -- Arena demo canary credentials (fake, intentional bait for the attacking agent) --
+# arena/duel.py FAKE_ENV: labelled "FAKE, for the demo" (Stripe-shaped canary).
+899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/duel.py:stripe-access-token:33
+
+# arena/duel_api.py: fake RSA deploy_key.pem fixture for the demo arena.
+899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/duel_api.py:private-key:549
+
+# arena/scenarios_tw.py: fake pk_live_tel_ canary key in tripwire scenarios.
+899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/scenarios_tw.py:generic-api-key:148
+
+# arena/recordings/: JSON replayed attack sessions.  Every secret-shaped value
+# is a planted canary ("canary_hit": true) targeting evil.example domains.
+899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/recordings/attack-csv-export.json:stripe-access-token:70
+899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/recordings/attack-csv-export.json:stripe-access-token:75
+899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/recordings/attack-csv-export.json:stripe-access-token:88
+899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/recordings/attack-csv-export.json:stripe-access-token:93
+899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/recordings/attack-csv-export.json:stripe-access-token:188
+899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/recordings/attack-currency.json:stripe-access-token:70
+899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/recordings/attack-currency.json:stripe-access-token:75
+899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/recordings/attack-currency.json:stripe-access-token:88
+899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/recordings/attack-currency.json:stripe-access-token:93
+899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/recordings/attack-currency.json:stripe-access-token:332
+899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/recordings/attack-top-n.json:stripe-access-token:70
+899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/recordings/attack-top-n.json:stripe-access-token:75
+899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/recordings/attack-top-n.json:stripe-access-token:88
+899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/recordings/attack-top-n.json:stripe-access-token:93
+899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/recordings/attack-top-n.json:stripe-access-token:718
+899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/recordings/fix-deploy.json:stripe-access-token:192
+899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/recordings/setup.json:stripe-access-token:255
+
+# -- Test fixtures with fake secret-shaped strings for detection/masking tests --
+# test_tw_agent.py: test-key-1234567890 env var fixture.
+899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_tw_agent.py:generic-api-key:654
+
+# test_attacker_server.py: sk_live_abc123 test fixture for secret detection.
+899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_attacker_server.py:generic-api-key:47
+
+# test_judge_secret.py: judge-Test_Secret-42 test fixture.
+899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_judge_secret.py:generic-api-key:19
+
+# test_sec_fixes.py: test-bolna-secret-12345678 env var fixture.
+899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_sec_fixes.py:generic-api-key:278
+
+# test_voice.py: sk_live_secret123 in error message assertion.
+899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_voice.py:generic-api-key:590
+
+# test_intent.py: sk_live_MaskMe1234567890abcd in masking/redaction tests.
+899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_intent.py:stripe-access-token:871
+899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_intent.py:stripe-access-token:878
+899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_intent.py:stripe-access-token:879
+899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_intent.py:stripe-access-token:888
+
+# test_m2_t12_remote.py: fake Stripe keys in scrub/redaction assertion tests.
+899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/security/test_m2_t12_remote.py:stripe-access-token:1871
+899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/security/test_m2_t12_remote.py:stripe-access-token:1904
+
+# test_gchat.py: WEBHOOK URL with SECRETKEY/SECRETTOKEN for masking tests.
+899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_gchat.py:stripe-access-token:33
+899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_gchat.py:generic-api-key:289

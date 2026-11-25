@@ -21,6 +21,7 @@ from sandbox.connector.hook_templates import (
     PRETOOLUSE_STUB,
     POSTTOOLUSE_STUB,
     SESSIONSTART_STUB,
+    USERPROMPTSUBMIT_STUB,
 )
 from sandbox.connector.layout import FolderLayout
 from sandbox.connector.policy import default_policy, save_policy
@@ -349,6 +350,9 @@ def init(
     session_stub_path = layout.hooks_dir / "sessionstart.py"
     session_stub_path.write_text(SESSIONSTART_STUB, encoding="utf-8")
 
+    prompt_stub_path = layout.hooks_dir / "userpromptsubmit.py"
+    prompt_stub_path.write_text(USERPROMPTSUBMIT_STUB, encoding="utf-8")
+
     settings_path = None
     warnings: list[str] = []
     if claude:
@@ -371,6 +375,222 @@ def init(
         "policy": str(layout.policy_file),
         "warnings": warnings,
     }
+
+
+def _git_exclude_path(root: Path) -> Path | None:
+    """Find the git exclude file using rev-parse (handles worktrees, monorepos)."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--git-path", "info/exclude"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode != 0:
+            return None
+        p = Path(r.stdout.strip())
+        if not p.is_absolute():
+            p = root / p
+        return p.resolve()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _git_toplevel(root: Path) -> Path | None:
+    """Get the git working tree root via rev-parse --show-toplevel."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode != 0:
+            return None
+        return Path(r.stdout.strip()).resolve()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _write_state_gitignore(layout: FolderLayout) -> None:
+    """Write .sandbox/state/.gitignore containing '*' so state files are never staged."""
+    gi = layout.state_dir / ".gitignore"
+    gi.parent.mkdir(parents=True, exist_ok=True)
+    gi.write_text("*\n", encoding="utf-8")
+
+
+def _plant_canaries(layout: FolderLayout, session_id: str) -> dict | None:
+    """Plant canary tripwire files and store canaries.json. Returns canaries or None."""
+    try:
+        from sandbox.connector.tripwire import DECOY_PATHS, mint, plant
+
+        canaries = mint(session_id)
+        plant(layout.root, canaries)
+
+        # Store canaries in state dir
+        canary_file = layout.state_dir / "canaries.json"
+        canary_file.parent.mkdir(parents=True, exist_ok=True)
+        canary_file.write_text(json.dumps(canaries), encoding="utf-8")
+
+        # Write .sandbox/state/.gitignore
+        _write_state_gitignore(layout)
+
+        # Add decoy paths to git exclude (handles worktrees, monorepos)
+        exclude_path = _git_exclude_path(layout.root)
+        if exclude_path is not None:
+            # Ensure the info/ directory exists
+            exclude_path.parent.mkdir(parents=True, exist_ok=True)
+            if not exclude_path.is_file():
+                exclude_path.write_text("", encoding="utf-8")
+
+            existing = exclude_path.read_text(encoding="utf-8")
+
+            # Compute paths relative to git toplevel
+            toplevel = _git_toplevel(layout.root)
+            if toplevel is not None:
+                try:
+                    rel_prefix = layout.root.resolve().relative_to(toplevel)
+                    if rel_prefix == Path("."):
+                        rel_prefix = None
+                except ValueError:
+                    rel_prefix = None
+            else:
+                rel_prefix = None
+
+            lines_to_add = []
+            for dp in DECOY_PATHS:
+                if rel_prefix is not None:
+                    # Monorepo subfolder: prefix with relative path
+                    exclude_entry = str(rel_prefix / dp).replace("\\", "/")
+                else:
+                    exclude_entry = dp
+
+                if exclude_entry not in existing:
+                    lines_to_add.append(exclude_entry)
+
+            # Also exclude .sandbox/state if in a subfolder
+            state_rel = ".sandbox/state"
+            if rel_prefix is not None:
+                state_rel = str(rel_prefix / state_rel).replace("\\", "/")
+            if state_rel not in existing:
+                lines_to_add.append(state_rel)
+
+            if lines_to_add:
+                with open(exclude_path, "a", encoding="utf-8") as f:
+                    if existing and not existing.endswith("\n"):
+                        f.write("\n")
+                    f.write("# Canary decoy files (sandbox tripwire)\n")
+                    for entry in lines_to_add:
+                        f.write(entry + "\n")
+
+        return canaries
+    except Exception:  # noqa: BLE001 — canary planting is best-effort
+        return None
+
+
+def _remove_canaries(layout: FolderLayout, warn_fn=None) -> None:
+    """Remove planted canary decoy files and clean up .git/info/exclude.
+
+    Only removes decoys whose content hash matches the hash stored at plant
+    time (in canaries.json _planted_hashes).  Modified files are left in
+    place with a warning via *warn_fn*.
+    """
+    try:
+        import hashlib
+        from sandbox.connector.tripwire import DECOY_PATHS
+
+        # Load planted hashes from canaries.json
+        canary_file = layout.state_dir / "canaries.json"
+        planted_hashes: dict[str, str] = {}
+        if canary_file.is_file():
+            try:
+                cdata = json.loads(canary_file.read_text(encoding="utf-8"))
+                planted_hashes = cdata.get("_planted_hashes", {})
+            except Exception:  # noqa: BLE001
+                pass
+
+        for dp in DECOY_PATHS:
+            decoy = layout.root / dp
+            if decoy.is_file():
+                # Only remove if unchanged from what we planted
+                if dp in planted_hashes:
+                    current = hashlib.sha256(decoy.read_bytes()).hexdigest()
+                    if current != planted_hashes[dp]:
+                        if warn_fn:
+                            warn_fn(f"keeping modified decoy: {dp}")
+                        continue  # user modified, leave it
+                decoy.unlink()
+            parent = decoy.parent
+            if parent.is_dir() and parent != layout.root:
+                try:
+                    parent.rmdir()
+                except OSError:
+                    pass
+
+        # Clean up git exclude lines
+        exclude_path = _git_exclude_path(layout.root)
+        if exclude_path is not None and exclude_path.is_file():
+            # Build the set of entries we might have written
+            toplevel = _git_toplevel(layout.root)
+            exclude_entries = set()
+            for dp in DECOY_PATHS:
+                exclude_entries.add(dp)
+                # Also the prefixed form for monorepo subfolders
+                if toplevel is not None:
+                    try:
+                        rel_prefix = layout.root.resolve().relative_to(toplevel)
+                        if rel_prefix != Path("."):
+                            exclude_entries.add(str(rel_prefix / dp).replace("\\", "/"))
+                    except ValueError:
+                        pass
+            # Also the .sandbox/state entry
+            exclude_entries.add(".sandbox/state")
+            if toplevel is not None:
+                try:
+                    rel_prefix = layout.root.resolve().relative_to(toplevel)
+                    if rel_prefix != Path("."):
+                        exclude_entries.add(str(rel_prefix / ".sandbox/state").replace("\\", "/"))
+                except ValueError:
+                    pass
+
+            lines = exclude_path.read_text(encoding="utf-8").splitlines(keepends=True)
+            cleaned = [
+                ln for ln in lines
+                if ln.strip() not in exclude_entries
+                and ln.strip() != "# Canary decoy files (sandbox tripwire)"
+            ]
+            exclude_path.write_text("".join(cleaned), encoding="utf-8")
+
+        # Remove canaries.json
+        if canary_file.is_file():
+            canary_file.unlink()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def init_folder(root: str | Path, *, no_canaries: bool = False, **kwargs) -> dict[str, Any]:
+    """High-level init: standard init plus canary planting.
+
+    Wraps init() and adds canary tripwire files unless --no-canaries.
+    When --no-canaries is passed on an already-initialised folder, existing
+    unchanged decoys and canaries.json are removed.
+    """
+    result = init(root, **kwargs)
+    layout = FolderLayout(root)
+    if not no_canaries:
+        session_id = result.get("session_id", "unknown")
+        canaries = _plant_canaries(layout, session_id)
+        result["canaries_planted"] = canaries is not None
+    else:
+        # Disable canaries: remove existing decoys and canaries.json
+        _remove_canaries(layout)
+        result["canaries_planted"] = False
+    # Always write .sandbox/state/.gitignore
+    _write_state_gitignore(layout)
+    return result
+
+
+def uninstall_folder(root: str | Path, *, keep_data: bool = False, warn_fn=None) -> dict[str, Any]:
+    """Uninstall with canary cleanup."""
+    layout = FolderLayout(root)
+    _remove_canaries(layout, warn_fn=warn_fn)
+    return uninstall(root, keep_data=keep_data)
 
 
 def _merge_settings(layout: FolderLayout, stub_path: Path, python: str | None = None) -> Path:
@@ -447,6 +667,23 @@ def _merge_settings(layout: FolderLayout, stub_path: Path, python: str | None = 
     }
     start.insert(0, start_entry)
 
+    # UserPromptSubmit hook — saves latest user prompt to task.txt.
+    prompt_stub = layout.hooks_dir / "userpromptsubmit.py"
+    ups = hooks.setdefault("UserPromptSubmit", [])
+    ups[:] = [h for h in ups if not h.get(_MARKER)]
+    ups_entry = {
+        _MARKER: True,
+        "matcher": "*",
+        "hooks": [
+            {
+                "type": "command",
+                "command": _cmd(prompt_stub),
+                "timeout": 10,
+            }
+        ],
+    }
+    ups.insert(0, ups_entry)
+
     target.write_text(json.dumps(existing, indent=2), encoding="utf-8")
     return target
 
@@ -466,7 +703,7 @@ def uninstall(root: str | Path, *, keep_data: bool = False) -> dict[str, Any]:
             continue
         hooks = existing.get("hooks", {})
         changed = False
-        for event in ("PreToolUse", "PostToolUse", "SessionStart"):
+        for event in ("PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit"):
             entries = hooks.get(event, [])
             kept = [h for h in entries if not h.get(_MARKER)]
             if len(kept) != len(entries):

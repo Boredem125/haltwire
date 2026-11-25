@@ -316,6 +316,150 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
     except ImportError:
         pass  # sync module not available; not a managed workspace
 
+    # F1/F4: approver CLI check runs before quarantine so the agent cannot
+    # self-unfreeze.  This is a quick check for shell tools only.
+    if tool_name in _SHELL_TOOLS:
+        _cmd_text = str(tool_input.get("command", ""))
+        if _cmd_text:
+            _cmd_low = _cmd_text.lower()
+            _mentions_cli = "sandbox" in _cmd_low or "haltwire" in _cmd_low
+            try:
+                from sandbox.connector.classify import _seg_approver
+                from sandbox.connector import shellwords
+
+                _lexed = shellwords.lex(_cmd_text)
+                for _seg in _lexed.segments:
+                    _sub = _seg_approver(_seg)
+                    if _sub is not None:
+                        _audit(layout, session_id, {
+                            "event": "denied", "tool": tool_name,
+                            "reason_code": "APPROVER_CLI",
+                            "reason": f"agent attempted approver subcommand: {_sub}",
+                            "command": _cmd_text,
+                        })
+                        return _pre_output("deny", (
+                            f"SANDBOX DENIED [APPROVER_CLI]: the agent cannot run "
+                            f"approver commands ({_sub}). Approvals come from a "
+                            "human's terminal only."
+                        ))
+            except Exception:  # noqa: BLE001
+                # Fail closed: if lex fails on a command that mentions the
+                # sandbox/haltwire CLI, deny rather than falling through.
+                if _mentions_cli:
+                    _audit(layout, session_id, {
+                        "event": "denied", "tool": tool_name,
+                        "reason_code": "BAD_INPUT",
+                        "reason": "command mentions sandbox/haltwire CLI but cannot be parsed",
+                        "command": _cmd_text[:200],
+                    })
+                    return _pre_output("deny", (
+                        "SANDBOX DENIED [BAD_INPUT]: the command mentions "
+                        "the sandbox CLI but cannot be parsed. Approver commands "
+                        "come from a human's terminal only."
+                    ))
+
+    # Quarantine flag: while set, deny everything except Read/Glob/Grep and
+    # mcp__sandbox__*, exactly like locked mode.  The flag is written by
+    # tripwire.quarantine on a canary hit or exfil detection.
+    _QUARANTINE_ALLOW = {"Read", "Glob", "Grep"}
+    _quarantine_file = layout.state_dir / "quarantine.json"
+    if _quarantine_file.is_file():
+        if not tool_name.startswith("mcp__sandbox__") and tool_name not in _QUARANTINE_ALLOW:
+            _qreason = ""
+            try:
+                _qdata = json.loads(_quarantine_file.read_text(encoding="utf-8"))
+                _qreason = _qdata.get("reason", "tripwire")
+            except Exception:  # noqa: BLE001
+                _qreason = "tripwire"
+            _audit(layout, session_id, {
+                "event": "denied", "tool": tool_name,
+                "reason_code": "QUARANTINE",
+                "reason": f"workspace is quarantined ({_qreason}); run `sandbox unfreeze`",
+            })
+            return _pre_output("deny", (
+                "SANDBOX DENIED [QUARANTINE]: this workspace is quarantined after a "
+                "tripwire violation. Only reads are allowed. Run `sandbox unfreeze` "
+                "with an approver key to restore."
+            ))
+
+    # Typosquat check: runs on shell tools before classify, so all agents
+    # (Claude Code, Antigravity, Gemini CLI) get it.  Hits escalate (single
+    # human approval), not hard deny.
+    _typosquat_hit = None
+    if tool_name in _SHELL_TOOLS:
+        try:
+            from sandbox.connector import typosquat as _typosquat
+
+            _ts_command = str(tool_input.get("command", ""))
+            _typosquat_hit = _typosquat.check_command(_ts_command, cwd)
+            if _typosquat_hit is not None:
+                _ts_why = _typosquat.reason(_typosquat_hit)
+                _audit(layout, session_id, {
+                    "event": "typosquat_escalated", "tool": tool_name,
+                    "reason_code": "TYPOSQUAT",
+                    "reason": _ts_why, "command": _ts_command,
+                })
+                return _pre_output("deny", f"SANDBOX DENIED {_ts_why}")
+        except Exception as _ts_exc:  # noqa: BLE001
+            _audit(layout, session_id, {
+                "event": "typosquat_error", "tool": tool_name,
+                "error": str(_ts_exc)[:200],
+            })
+
+    # Canary tripwire: decoy-path access or canary exfil in args triggers
+    # quarantine.  Canaries are loaded from .sandbox/state/canaries.json.
+    _canaries = None
+    _canary_file = layout.state_dir / "canaries.json"
+    if _canary_file.is_file():
+        try:
+            _canaries = json.loads(_canary_file.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            _canaries = None
+    if _canaries is not None:
+        try:
+            from sandbox.connector import tripwire as _tripwire
+
+            _tw_trip = _tripwire.check(tool_name, tool_input, _canaries, layout.root,
+                                       layout=layout, mode="hook")
+            if _tw_trip is not None and _tw_trip.get("kind") != "quarantined":
+                # Quarantine: write the flag and deny.  ALWAYS deny even if
+                # quarantine/sign/audit raise (finding 4).
+                try:
+                    _tripwire.quarantine(layout, session_id, _tw_trip)
+                except Exception:  # noqa: BLE001
+                    # Write a minimal quarantine flag if signing failed
+                    try:
+                        _qf = layout.state_dir / "quarantine.json"
+                        _qf.write_text(json.dumps({
+                            "reason": "tripwire_stop",
+                            "trip_kind": _tw_trip.get("kind", ""),
+                        }), encoding="utf-8")
+                    except Exception:  # noqa: BLE001
+                        pass
+                # Full evidence goes to audit only (never to the agent)
+                _audit(layout, session_id, {
+                    "event": "tripwire_stop", "tool": tool_name,
+                    "reason_code": "TRIPWIRE",
+                    "reason": _tw_trip.get("evidence", "tripwire violation"),
+                    "trip_kind": _tw_trip.get("kind"),
+                    "canary_name": _tw_trip.get("canary_name"),
+                })
+                # F7: generic deny reason -- no canary name, encoding, or value
+                return _pre_output("deny", (
+                    "SANDBOX DENIED [TRIPWIRE]: tripwire violation; "
+                    "workspace frozen, a human must unfreeze. "
+                    "Run `sandbox unfreeze` to restore."
+                ))
+        except Exception as _tw_exc:  # noqa: BLE001 — tripwire never breaks the hook
+            _audit(layout, session_id, {
+                "event": "tripwire_error", "tool": tool_name,
+                "error": str(_tw_exc)[:200],
+            })
+
+        # Note: the separate exfil_scan on PreToolUse args was removed (finding 7:
+        # double scan).  tripwire.check already runs _check_canary_exfil on the
+        # full args text, covering canary exfil detection without a second pass.
+
     # Resolve WHO is acting — authority is granted to an identity, not a command.
     identity = from_payload(payload, layout, policy)
 
@@ -410,6 +554,93 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
             # (dual control, enforced in connector/approval.py).
             result.verdict = "escalate"
 
+    # AI intent judge: raise-only, runs only when verdict is not deny, only
+    # for shell/network/write tools, only when policy intent.enabled + key,
+    # and NOT for allowlisted read-only calls (verdict "allow" with no trigger).
+    if result.verdict in ("allow", "observe", "escalate"):
+        _action = result.trigger or _action_class(tool_name)
+        if _action in ("shell", "network", "write"):
+            _intent_pol = getattr(policy, "intent", None)
+            _intent_enabled = getattr(_intent_pol, "enabled", False) if _intent_pol else False
+            _intent_timeout = min(getattr(_intent_pol, "timeout_seconds", 8), 20) if _intent_pol else 8
+            _has_key = bool(os.environ.get("GEMINI_API_KEY", "").strip())
+            # Skip allowlisted read-only calls: verdict allow + ALLOW reason
+            # (like git status, ls) but NOT writes or network tools
+            _skip_judge = (result.verdict == "allow"
+                           and result.reason_code == "ALLOW"
+                           and _action not in ("write", "network"))
+            if _intent_enabled and _has_key and not _skip_judge:
+                try:
+                    from sandbox.connector import intent as _intent_mod
+
+                    # Get the task from the last user message
+                    _task_text = ""
+                    _task_file = layout.state_dir / "task.txt"
+                    if _task_file.is_file():
+                        try:
+                            _task_text = _task_file.read_text(encoding="utf-8")[:500]
+                        except Exception:  # noqa: BLE001
+                            pass
+
+                    _canaries_for_judge = _canaries if _canaries is not None else {}
+
+                    # F5 final: run the judge in a daemon thread that we join
+                    # with a timeout.  A daemon thread doesn't keep the process
+                    # alive, so asyncio.run's shutdown_default_executor doesn't
+                    # block on a hung Gemini call.
+                    import threading as _threading
+
+                    _iv_box: list[dict] = []
+
+                    def _run_judge():
+                        # Test-only hook: HALTWIRE_TEST_JUDGE_SLEEP
+                        if os.environ.get("HALTWIRE_TEST_MODE") and os.environ.get("HALTWIRE_TEST_JUDGE_SLEEP"):
+                            import time as _t
+                            _t.sleep(float(os.environ["HALTWIRE_TEST_JUDGE_SLEEP"]))
+                            _iv_box.append({"flag": True, "reason": "late", "confidence": 0.9,
+                                            "model": "test", "latency_ms": 99999, "error": None})
+                            return
+                        _iv_box.append(_intent_mod.judge_tool_call(
+                            _task_text, tool_name, tool_input, [],
+                            canaries=_canaries_for_judge,
+                            timeout_ms=_intent_timeout * 1000,
+                        ))
+
+                    _jt = _threading.Thread(target=_run_judge, daemon=True)
+                    _jt.start()
+                    _jt.join(timeout=_intent_timeout)
+                    if _iv_box:
+                        _iv = _iv_box[0]
+                    else:
+                        _iv = {"flag": False, "error": "timeout", "latency_ms": _intent_timeout * 1000}
+
+                    if _iv.get("error"):
+                        _audit(layout, session_id, {
+                            "event": "intent_error", "tool": tool_name,
+                            "error": _iv["error"], "latency_ms": _iv.get("latency_ms"),
+                        })
+                    elif _iv.get("flag"):
+                        # Flag: escalate with dual control
+                        result.verdict = "escalate"
+                        result.requires_dual = True
+                        result.reason_code = "AI_INTENT"
+                        result.reason = (
+                            f"AI intent judge flagged this action: {_iv.get('reason', '')}"
+                        )
+                        _audit(layout, session_id, {
+                            "event": "ai_flag", "tool": tool_name,
+                            "reason_code": "AI_INTENT",
+                            "reason": _iv.get("reason", ""),
+                            "confidence": _iv.get("confidence"),
+                            "model": _iv.get("model"),
+                            "identity": identity.to_dict() if identity else {},
+                        })
+                except Exception as _jg_exc:  # noqa: BLE001 — judge never breaks the hook
+                    _audit(layout, session_id, {
+                        "event": "judge_error", "tool": tool_name,
+                        "error": str(_jg_exc)[:200],
+                    })
+
     # Data classification (policy.classification): itemized factor, verdict floor
     # by level, dual control when a CONFIDENTIAL/RESTRICTED file is sent out.
     from sandbox.connector import context_rules as _ctx
@@ -442,6 +673,47 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
                 "untrusted content read earlier looked like instructions aimed at the AI; "
                 "until a human reviews it, this action needs approval"
             )
+
+    # Canary taint: a canary appeared in earlier tool output (PostToolUse set
+    # canary_taint.json).  Network-class calls escalate until a human clears it.
+    # Raise-only: never lowers a verdict.  Same pattern as injection taint above.
+    _NETWORK_SHELL_CMDS = frozenset({
+        "curl", "wget", "nc", "ncat", "scp", "ssh", "sftp", "rsync",
+        "invoke-webrequest", "invoke-restmethod", "iwr", "irm",
+    })
+    _NETWORK_GIT_CMDS = frozenset({"push", "fetch", "pull", "clone", "remote"})
+    if result.verdict in ("allow", "observe", "escalate"):
+        _ct_file = layout.state_dir / "canary_taint.json"
+        if _ct_file.is_file():
+            _effective_ct = result.trigger or _action_class(tool_name)
+            _is_network_call = _effective_ct == "network"
+            # For shell commands, check if the command itself is a network command
+            if not _is_network_call and _effective_ct == "shell" and result.command:
+                _first_word = result.command.strip().split()[0].lower().replace(".exe", "") if result.command.strip() else ""
+                _is_network_call = _first_word in _NETWORK_SHELL_CMDS
+                # git push/fetch/pull/clone
+                if not _is_network_call and _first_word == "git":
+                    _git_parts = result.command.strip().split()
+                    if len(_git_parts) >= 2 and _git_parts[1].lower() in _NETWORK_GIT_CMDS:
+                        _is_network_call = True
+                # pip --index-url (exfil via custom PyPI)
+                if not _is_network_call and _first_word in ("pip", "pip3"):
+                    if "--index-url" in result.command or "-i " in result.command:
+                        _is_network_call = True
+
+            if _is_network_call:
+                _ct_reason = (
+                    "SANDBOX DENIED [CANARY_TAINT]: a canary value appeared in "
+                    "earlier tool output; network access needs human approval. "
+                    "Run `sandbox unfreeze` or `sandbox clear-taint` to clear."
+                )
+                _audit(layout, session_id, {
+                    "event": "canary_taint_escalated", "tool": tool_name,
+                    "reason_code": "CANARY_TAINT",
+                    "command": result.command,
+                    "identity": identity.to_dict() if identity else {},
+                })
+                return _pre_output("deny", _ct_reason)
 
     # Governance clauses on non-shell calls (MCP tools, WebFetch). Until now no
     # clause saw them: an allowlisted mcp__stripe__create_refund ran silently.
@@ -1183,6 +1455,92 @@ async def post_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[s
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input", {}) or {}
 
+    # Canary-in-output detection.  Scan stdout, stderr, and file content.
+    # If the tool call itself targeted a planted decoy, FREEZE.
+    # Otherwise, set canary taint so later network/shell escalates.  No freeze.
+    _SCAN_CAP_POST = 256 * 1024
+    _canary_file_post = layout.state_dir / "canaries.json"
+    if _canary_file_post.is_file():
+        try:
+            _canaries_post = json.loads(_canary_file_post.read_text(encoding="utf-8"))
+            _resp = payload.get("tool_response", {})
+            _resp_parts: list[str] = []
+            if isinstance(_resp, dict):
+                for _rk in ("stdout", "stderr", "content"):
+                    _rv = _resp.get(_rk, "")
+                    if _rv:
+                        _resp_parts.append(str(_rv)[:_SCAN_CAP_POST])
+                # Also scan nested file.content (Read tool)
+                _file_resp = _resp.get("file", {})
+                if isinstance(_file_resp, dict) and _file_resp.get("content"):
+                    _resp_parts.append(str(_file_resp["content"])[:_SCAN_CAP_POST])
+            elif isinstance(_resp, str):
+                _resp_parts.append(_resp[:_SCAN_CAP_POST])
+            _resp_text = "\n".join(_resp_parts)
+            if _resp_text:
+                from sandbox.connector import exfil_scan as _escan_post
+
+                _exfil_post = _escan_post.scan_text(_resp_text, _canaries_post)
+                if _exfil_post is not None:
+                    session = _read_session(layout)
+                    session_id = session.get("session_id", "")
+                    # Did the tool call itself target a planted decoy?
+                    _planted = set(_canaries_post.get("_planted_hashes", {}).keys())
+                    _target = ""
+                    for _pk in ("file_path", "path"):
+                        _pv = tool_input.get(_pk, "")
+                        if _pv:
+                            from sandbox.connector.tripwire import _normalise_path
+                            _target = _normalise_path(str(_pv), layout.root)
+                            break
+                    _targeted_decoy = _target in _planted if _target else False
+
+                    if _targeted_decoy:
+                        # Freeze: the call targeted a planted decoy
+                        from sandbox.connector import tripwire as _tw_post
+                        _trip_post = {
+                            "kind": "canary_exfil_output",
+                            "canary_name": _exfil_post.get("canary_name", "unknown"),
+                            "evidence": f"canary in output ({_exfil_post.get('encoding', 'unknown')})",
+                        }
+                        try:
+                            _tw_post.quarantine(layout, session_id, _trip_post)
+                        except Exception:  # noqa: BLE001
+                            try:
+                                layout.quarantine_flag.write_text(json.dumps({
+                                    "reason": "tripwire_stop", "trip_kind": "canary_exfil_output",
+                                }), encoding="utf-8")
+                            except Exception:  # noqa: BLE001
+                                pass
+                        _audit(layout, session_id, {
+                            "event": "tripwire_stop", "tool": tool_name,
+                            "reason_code": "TRIPWIRE",
+                            "reason": _trip_post["evidence"],
+                            "canary_name": _exfil_post.get("canary_name"),
+                        })
+                    else:
+                        # Taint: the call did not target a decoy, but output has a canary.
+                        # Set canary taint so later network/shell escalates.
+                        _taint_data = {
+                            "ts": time.time(),
+                            "canary_name": _exfil_post.get("canary_name", "unknown"),
+                            "encoding": _exfil_post.get("encoding", "unknown"),
+                            "tool": tool_name,
+                        }
+                        try:
+                            _taint_file = layout.state_dir / "canary_taint.json"
+                            _taint_file.write_text(json.dumps(_taint_data), encoding="utf-8")
+                        except Exception:  # noqa: BLE001
+                            pass
+                        _audit(layout, session_id, {
+                            "event": "canary_taint", "tool": tool_name,
+                            "reason_code": "CANARY_TAINT",
+                            "canary_name": _exfil_post.get("canary_name"),
+                            "encoding": _exfil_post.get("encoding"),
+                        })
+        except Exception:  # noqa: BLE001 — canary scan never breaks the hook
+            pass
+
     # Untrusted output (web pages, files, command output, MCP results) is scanned
     # for instructions aimed at the AI before the agent acts on it.
     if tool_name not in _WRITE_TOOLS:
@@ -1211,6 +1569,8 @@ def _action_class(tool_name: str) -> str:
     """What an allowlisted call would do if it were carrying out an injection."""
     if tool_name in _SHELL_TOOLS:
         return "shell"
+    if tool_name in _WRITE_TOOLS:
+        return "write"
     if tool_name in ("WebFetch", "WebSearch") or (
         tool_name.startswith("mcp__") and not tool_name.startswith("mcp__sandbox__")
     ):

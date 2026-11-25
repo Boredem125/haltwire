@@ -340,20 +340,8 @@ async def evaluate(raw: str) -> dict[str, Any]:
 
     layout = FolderLayout.discover(claude_payload["cwd"])
 
-    if claude_payload["tool_name"] in {"Bash", "PowerShell"}:
-        from sandbox.connector import typosquat
-        command = str(claude_payload["tool_input"].get("command", ""))
-        hit = typosquat.check_command(command, claude_payload["cwd"])
-        if hit is not None:
-            why = typosquat.reason(hit)
-            if layout is not None:
-                from sandbox.connector.hook_eval import _audit
-                _audit(layout, claude_payload["session_id"], {
-                    "event": "denied", "tool": claude_payload["tool_name"],
-                    "agent_type": claude_payload["agent_type"],
-                    "command": command, "reason_code": "TYPOSQUAT", "reason": why,
-                })
-            return _deny(why)
+    # F10: typosquat check removed from here; the hook's pre_tool_use covers
+    # all agents (Claude Code, Antigravity, Gemini CLI) uniformly.
 
     if layout is None:
         # No sandbox folder here: same as the Claude Code hook, do nothing.

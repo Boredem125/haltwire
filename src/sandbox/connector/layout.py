@@ -88,6 +88,10 @@ class FolderLayout:
     def remembered(self) -> Path:
         return self.state_dir / "remembered.json"
 
+    @property
+    def quarantine_flag(self) -> Path:
+        return self.state_dir / "quarantine.json"
+
     # --- helpers ---------------------------------------------------------
     def exists(self) -> bool:
         return self.base.is_dir()

@@ -277,7 +277,7 @@ def _ensure_watch_window() -> None:
         env = agent_env()
         env["ARENA_RUNS"] = str(RUNS_BASE)
         flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-        _watch_proc = subprocess.Popen(
+        _watch_proc = subprocess.Popen(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args  -- all args are hardcoded (sys.executable, module name, RUNS_BASE constant set at import time); env is the server operator's own os.environ filtered through agent_env(); no web request input reaches this call; guarded by ARENA_AGY_WATCH=1 (presenter-only)
             [sys.executable, "-m", "arena.watch_agy", str(RUNS_BASE)],
             cwd=str(Path(__file__).resolve().parent.parent),
             env=env, creationflags=flags)

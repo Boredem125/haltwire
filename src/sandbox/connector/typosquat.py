@@ -1,4 +1,4 @@
-"""Deterministic typosquat check for package installs (buildathon branch only).
+"""Deterministic typosquat check for package installs.
 
 An agent told to "install the requirements" never types the package name, so
 a one-letter typo in ``requirements.txt`` (``pandaz-csv`` for ``pandas``) gets
@@ -7,7 +7,7 @@ package names out of ``pip``/``uv``/``npm``/``yarn``/``pnpm`` install
 commands, including ``-r`` requirement files, and flags any name that is one
 or two edits away from a popular package without being that package.
 
-Raise-only: a hit turns the call into a deny; no hit changes nothing.
+Raise-only: a hit escalates (single human approval); no hit changes nothing.
 """
 from __future__ import annotations
 
@@ -35,7 +35,25 @@ jquery bootstrap tailwindcss vite rollup esbuild nodemon cross-env colors
 request node-fetch got bluebird rxjs zod tslib minimist semver glob rimraf
 """.split())
 
-_CORE = {name.replace("_", "-") for name in POPULAR}
+# Known-legitimate packages that look like typosquats but are real.
+# Membership means never flagged.
+KNOWN_LEGIT = frozenset("""
+vitest preact psycopg psycopg-binary psycopg2-binary dash yaml mysql color
+scapy cattrs arrow unicorn simpy boto grpc jinja
+pyyaml simplejson ujson orjson pytz tzdata babel toml tomli
+httpx aiohttp uvloop gunicorn celery redis pymysql pymongo
+paramiko colorama tqdm rich typer docker kubernetes
+websockets pyjwt grpcio protobuf polars dask seaborn plotly
+xgboost lightgbm networkx sympy pyarrow ipython jupyter notebook
+vite rollup esbuild nodemon cross-env colors semver glob rimraf
+tslib minimist lodash axios moment chalk commander debug zod
+bluebird rxjs got yargs inquirer underscore uuid cors dotenv
+mocha jest eslint prettier typescript webpack next nuxt
+react react-dom vue angular express body-parser mongoose
+sequelize socket.io jquery bootstrap tailwindcss
+""".split())
+
+_CORE = {name.replace("_", "-") for name in POPULAR} | {name.replace("_", "-") for name in KNOWN_LEGIT}
 _PREFIXES = {
     "python", "py", "django", "flask", "pytest", "sphinx", "types", "google",
     "azure", "aws", "react", "vue", "node", "babel", "eslint", "webpack",
@@ -127,12 +145,15 @@ def _read_requirements(path: Path) -> list[str]:
 
 
 def _segments(command: str) -> list[list[str]]:
+    # Normalise Windows path separators so shlex.posix doesn't eat backslashes.
+    # pip install -r .\requirements.txt  ->  pip install -r ./requirements.txt
+    normalised = command.replace("\\", "/")
     try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
+        lexer = shlex.shlex(normalised, posix=True, punctuation_chars=";&|")
         lexer.whitespace_split = True
         tokens = list(lexer)
     except ValueError:
-        tokens = command.split()
+        tokens = normalised.split()
     segs, cur = [], []
     for t in tokens:
         if t in _SEPARATORS:
@@ -181,7 +202,7 @@ def _packages(seg: list[str], cwd: str) -> list[tuple[str, str]]:
             req = Path(a.split("=", 1)[1])
             req = req if req.is_absolute() else Path(cwd) / req
             out += [(n, a.split("=", 1)[1]) for n in _read_requirements(req)]
-        elif not a.startswith("-") and not a.startswith((".", "/", "\\")) and "://" not in a:
+        elif not a.startswith("-") and not a.startswith((".", "/", "\\", ".\\", "./")) and "://" not in a:
             name = a.strip("'\"") if a.startswith("@") else _clean(a)
             if name:
                 out.append((name, "command"))
@@ -205,8 +226,7 @@ def check_command(command: str, cwd: str) -> Hit | None:
 def reason(hit: Hit) -> str:
     where = "the command" if hit.source == "command" else hit.source
     return (
-        f"SANDBOX DENIED [TYPOSQUAT]: {where} installs '{hit.package}', "
+        f"[TYPOSQUAT]: {where} installs '{hit.package}', "
         f"{hit.distance} letter(s) away from the popular package '{hit.looks_like}'. "
-        "This is a common supply-chain attack. Do not install it; ask the user to "
-        "check the package name."
+        "This may be a supply-chain attack. A human must verify the package name."
     )

@@ -155,3 +155,60 @@ You still keep `sandbox watch .` open to approve them.
   folder* where the agent is running, and that you started the agent *after* init.
 
 Full technical reference: [docs/CONNECTOR.md](docs/CONNECTOR.md)
+
+---
+
+## Frozen? How to unfreeze
+
+If the sandbox detects a tripwire violation (the agent accessed a planted canary
+file or leaked a canary value), it quarantines the workspace. Every tool call
+except reads is denied until a human unfreezes it.
+
+**Check the status:**
+
+```bash
+sandbox status .
+```
+
+If you see `FROZEN: yes (tripwire_stop)`, the workspace is quarantined.
+
+**To unfreeze:**
+
+1. First, make sure you have a pinned reviewer key. If you set up with
+   `sandbox init`, your key was auto-created but you need to pin it:
+
+   ```bash
+   sandbox keys pin <your-reviewer-id>
+   ```
+
+   (Replace `<your-reviewer-id>` with your name or a short identifier.)
+
+2. Then unfreeze:
+
+   ```bash
+   sandbox unfreeze --reviewer <your-reviewer-id>
+   ```
+
+   This writes a signed audit record proving who unfroze the workspace, then
+   clears the quarantine flag and any canary taint.
+
+   If the workspace is not frozen but network calls are being escalated with
+   `[CANARY_TAINT]`, a canary value appeared in earlier tool output. Clear it:
+
+   ```bash
+   sandbox unfreeze --reviewer <your-reviewer-id>
+   ```
+
+   This also clears canary taint.
+
+3. Verify the workspace is restored:
+
+   ```bash
+   sandbox status .
+   ```
+
+   The `FROZEN` line should no longer appear.
+
+**Why does this need a pinned key?** The unfreeze is a privileged action that
+clears a security hold. Requiring a pinned key means only a known human
+reviewer (not the agent) can do it, and the action is non-repudiable.

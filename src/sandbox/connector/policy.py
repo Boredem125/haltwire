@@ -257,6 +257,27 @@ class GovernanceControls(BaseModel):
 _ENROL_VALUES = ("first_use", "explicit")
 
 
+class IntentPolicy(BaseModel):
+    """AI intent judge settings (Gemini-based, raise-only).
+
+    Off by default.  When enabled and a GEMINI_API_KEY is present, the judge
+    can ESCALATE suspicious tool calls but never allow.  On timeout or error
+    it adds nothing (fail-open: the rules still protect).
+    """
+
+    enabled: bool = False
+    timeout_seconds: int = Field(8, ge=1, le=20)
+
+    @field_validator("timeout_seconds", mode="before")
+    @classmethod
+    def _clamp_timeout(cls, v: object) -> int:
+        try:
+            val = int(v)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 8
+        return max(1, min(20, val))
+
+
 class KeysPolicy(BaseModel):
     # ADR 0007 2.4: when "explicit", only already-pinned reviewers can approve.
     # Tighten-only: setting it back to "first_use" is a loosening change under
@@ -296,6 +317,7 @@ class FolderPolicy(BaseModel):
     limits: LimitPolicy = Field(default_factory=LimitPolicy)
     governance: GovernanceControls = Field(default_factory=GovernanceControls)
     keys: KeysPolicy = Field(default_factory=KeysPolicy)
+    intent: IntentPolicy = Field(default_factory=IntentPolicy)
     # dev | staging | prod, or None (unset: today's behaviour, SANDBOX_ENV still
     # read by the risk score). See docs/DATA_AND_ENVIRONMENT.md.
     environment: str | None = None

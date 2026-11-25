@@ -24,6 +24,11 @@ const VERSION = pkg.version;
 
 const IS_WIN = process.platform === "win32";
 
+// On Windows, only accept real executables (.exe, .com).  Refusing .cmd/.bat
+// avoids the need for cmd.exe /c which exposes metacharacter injection
+// (& | > < ^ %) -- user arguments would be interpreted as shell operators.
+const _SAFE_EXTS = IS_WIN ? [".exe", ".com"] : [""];
+
 /**
  * Resolve uvx or pipx on PATH. Exported for unit testing.
  *
@@ -36,17 +41,9 @@ function _resolveRunner(pathOverride) {
     ? [pathOverride]
     : (process.env.PATH || "").split(path.delimiter).filter(Boolean);
 
-  // Extensions to check on Windows.
-  const exts = IS_WIN
-    ? (process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD")
-        .split(";")
-        .map(function (e) { return e.toLowerCase(); })
-        .filter(Boolean)
-    : [""];
-
   for (const name of ["uvx", "pipx"]) {
     for (const dir of dirs) {
-      for (const ext of exts) {
+      for (const ext of _SAFE_EXTS) {
         const candidate = path.join(dir, name + ext);
         try {
           fs.accessSync(candidate, fs.constants.F_OK);
@@ -57,26 +54,28 @@ function _resolveRunner(pathOverride) {
       }
     }
   }
+
+  // On Windows, check whether a .cmd/.bat wrapper exists so we can give a
+  // specific diagnostic instead of a generic "not found".
+  if (IS_WIN) {
+    for (const name of ["uvx", "pipx"]) {
+      for (const dir of dirs) {
+        for (const ext of [".cmd", ".bat"]) {
+          var candidate = path.join(dir, name + ext);
+          try {
+            fs.accessSync(candidate, fs.constants.F_OK);
+            _resolveRunner._cmdFallback = candidate;
+            return null;
+          } catch (_) {}
+        }
+      }
+    }
+  }
+
+  _resolveRunner._cmdFallback = null;
   return null;
 }
-
-// ---------------------------------------------------------------------------
-// Spawn helper -- on Windows, .cmd/.bat cannot be spawned directly with
-// shell:false; wrap them through cmd.exe /c while keeping shell:false on
-// the spawnSync call itself.
-// ---------------------------------------------------------------------------
-
-function spawnRunner(allArgs, opts) {
-  var exe, execArgs;
-  if (IS_WIN && /\.(cmd|bat)$/i.test(allArgs[0])) {
-    exe = process.env.COMSPEC || "cmd.exe";
-    execArgs = ["/c"].concat(allArgs);
-  } else {
-    exe = allArgs[0];
-    execArgs = allArgs.slice(1);
-  }
-  return spawnSync(exe, execArgs, opts);
-}
+_resolveRunner._cmdFallback = null;
 
 // ---------------------------------------------------------------------------
 // Install helper
@@ -166,10 +165,20 @@ function main() {
   // Resolve runner
   const found = _resolveRunner();
   if (!found) {
-    const cmd = _installCommand();
-    process.stderr.write(
-      "Neither uvx nor pipx found on PATH.\nInstall uv:\n  " + cmd + "\n"
-    );
+    var cmd = _installCommand();
+    if (_resolveRunner._cmdFallback) {
+      // A .cmd/.bat wrapper exists but we refuse it (metacharacter injection
+      // risk when arguments are relayed through cmd.exe /c).
+      process.stderr.write(
+        "Found " + _resolveRunner._cmdFallback + " but haltwire needs uvx.exe " +
+        "(not a .cmd wrapper) for safe argument passing.\n" +
+        "Install uv:\n  " + cmd + "\n"
+      );
+    } else {
+      process.stderr.write(
+        "Neither uvx nor pipx found on PATH.\nInstall uv:\n  " + cmd + "\n"
+      );
+    }
     process.exit(1);
   }
 
@@ -209,7 +218,9 @@ function main() {
     allArgs = [found.path, "run", "--spec", gitSpec, "haltwire"].concat(hwArgs);
   }
 
-  var result = spawnRunner(allArgs, {
+  // Spawn the resolved executable directly -- no cmd.exe /c needed because
+  // the resolver only accepts real .exe/.com (not .cmd/.bat).
+  var result = spawnSync(allArgs[0], allArgs.slice(1), {
     stdio: "inherit",
     shell: false,
   });

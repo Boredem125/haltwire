@@ -24,6 +24,42 @@ from fastapi.testclient import TestClient
 from arena import gchat
 from arena.session import AlreadyDecidedError
 
+
+class _LogCapture:
+    """Lightweight replacement for caplog that works with ``-p no:logging``.
+
+    Usage::
+
+        with _LogCapture("arena.gchat", logging.WARNING) as logs:
+            ...
+        assert "foo" in logs.text
+    """
+
+    def __init__(self, logger_name: str, level: int = logging.DEBUG) -> None:
+        self._logger = logging.getLogger(logger_name)
+        self._level = level
+        self._handler = logging.StreamHandler(io.StringIO())
+        self._handler.setLevel(level)
+        self._prev_level: int | None = None
+
+    def __enter__(self) -> "_LogCapture":
+        self._prev_level = self._logger.level
+        self._logger.setLevel(self._level)
+        self._logger.addHandler(self._handler)
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._logger.removeHandler(self._handler)
+        if self._prev_level is not None:
+            self._logger.setLevel(self._prev_level)
+
+    @property
+    def text(self) -> str:
+        stream = self._handler.stream
+        assert isinstance(stream, io.StringIO)
+        return stream.getvalue()
+
+
 WEBHOOK = "https://chat.googleapis.com/v1/spaces/AAA/messages?key=SECRETKEY&token=SECRETTOKEN"
 BASE = "https://tripwire.example.test"
 
@@ -152,15 +188,14 @@ class TestNoOp:
         gchat.notify_trip(_session_dict(), BASE)
         assert called == []
 
-    def test_non_https_webhook_refused(self, monkeypatch: pytest.MonkeyPatch,
-                                       caplog: pytest.LogCaptureFixture) -> None:
+    def test_non_https_webhook_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("GCHAT_WEBHOOK_URL", "http://chat.googleapis.com/x?key=SECRETKEY")
         called: list[Any] = []
         monkeypatch.setattr(gchat, "_spawn", lambda fn: called.append(fn))
-        with caplog.at_level(logging.WARNING, logger="arena.gchat"):
+        with _LogCapture("arena.gchat", logging.WARNING) as logs:
             gchat.notify_trip(_session_dict(), BASE)
         assert called == []
-        assert "SECRETKEY" not in caplog.text
+        assert "SECRETKEY" not in logs.text
 
 
 # ---------------------------------------------------------------------------
@@ -179,27 +214,26 @@ class TestNeverRaise:
         return timeouts
 
     def test_http_error_does_not_raise_and_hides_url(
-            self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("GCHAT_WEBHOOK_URL", WEBHOOK)
         monkeypatch.setattr(gchat, "_spawn", lambda fn: fn())
         err = urllib.error.HTTPError(WEBHOOK, 400, "Bad Request", {}, io.BytesIO(b"bad"))
         timeouts = self._patch_urlopen(monkeypatch, err)
-        with caplog.at_level(logging.WARNING, logger="arena.gchat"):
+        with _LogCapture("arena.gchat", logging.WARNING) as logs:
             gchat.notify_trip(_session_dict(), BASE)
         assert timeouts == [5]
-        assert "400" in caplog.text
-        assert "SECRETKEY" not in caplog.text
-        assert "SECRETTOKEN" not in caplog.text
-        assert "chat.googleapis.com" not in caplog.text
+        assert "400" in logs.text
+        assert "SECRETKEY" not in logs.text
+        assert "SECRETTOKEN" not in logs.text
+        assert "chat.googleapis.com" not in logs.text
 
-    def test_url_error_does_not_raise(self, monkeypatch: pytest.MonkeyPatch,
-                                      caplog: pytest.LogCaptureFixture) -> None:
+    def test_url_error_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("GCHAT_WEBHOOK_URL", WEBHOOK)
         monkeypatch.setattr(gchat, "_spawn", lambda fn: fn())
         self._patch_urlopen(monkeypatch, urllib.error.URLError(f"cannot reach {WEBHOOK}"))
-        with caplog.at_level(logging.WARNING, logger="arena.gchat"):
+        with _LogCapture("arena.gchat", logging.WARNING) as logs:
             gchat.notify_decision(_session_dict(), {"decision": "approve"})
-        assert "SECRETKEY" not in caplog.text
+        assert "SECRETKEY" not in logs.text
 
     def test_timeout_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("GCHAT_WEBHOOK_URL", WEBHOOK)

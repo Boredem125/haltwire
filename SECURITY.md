@@ -136,3 +136,8 @@ Shell commands are now lexed against a static subset; anything outside it (expan
 ## Known limit: retired pre-M1 signing seeds (M1 T2)
 
 From M1 T2 new signing keys live outside the workspace. A seed from an older version stays in `.sandbox/state/keys/` until you run `sandbox keys purge-legacy`; it is no longer used to sign, but it is still readable to anything that can search the folder, and until pinned keys and the legacy-record rule (M1 T3/T4) land, records signed with it are not yet refused. Run `purge-legacy` after upgrading.
+
+## Known limits
+
+- **PostToolUse canary detection happens after the output reached the agent.** The canary scan in PostToolUse triggers quarantine, but the tool output was already returned to the model. The agent may have seen the canary value. PreToolUse canary detection covers the input path; the output path is a last-resort catch.
+- **A dynamically built path (e.g. `chr(46)+'sandbox'`) can evade static shell analysis.** The classifier operates on the literal command string; runtime-constructed paths are not visible. The real fix is OS-level protection (a broker-side filesystem filter or mandatory access control); it is on the roadmap.
