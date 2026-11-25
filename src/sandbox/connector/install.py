@@ -770,6 +770,17 @@ def uninstall(root: str | Path, *, keep_data: bool = False) -> dict[str, Any]:
         shutil.rmtree(layout.base, ignore_errors=True)
         data_removed = True
 
+    # Clean up companion dirs (.sandbox_logs, .trash) if they are empty.
+    # These are created by the session recorder and may be left behind after
+    # the data directory is removed.
+    for name in (".sandbox_logs", ".trash"):
+        companion = layout.root / name
+        if companion.is_dir():
+            try:
+                companion.rmdir()  # only succeeds if empty
+            except OSError:
+                pass  # not empty -- leave it alone
+
     return {
         "root": str(layout.root),
         "settings_entry_removed": removed_entry,

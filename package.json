@@ -1,6 +1,6 @@
 {
   "name": "haltwire",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "npx launcher for the haltwire sandbox CLI",
   "bin": {
     "haltwire": "bin/haltwire.js"

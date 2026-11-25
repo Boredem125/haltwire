@@ -156,3 +156,38 @@ def test_cli_uninstall_cleanup(tmp_path):
     assert not (tmp_path / ".claude").is_dir()
     status = _porcelain(tmp_path)
     assert status.strip() == "", f"porcelain not clean: {status}"
+
+
+def test_uninstall_removes_empty_companion_dirs(tmp_path):
+    """Uninstall removes empty .sandbox_logs/ and .trash/ left by the recorder."""
+    from sandbox.connector.install import init_folder, uninstall
+
+    _git(["init", "-q"], tmp_path)
+    init_folder(tmp_path, claude=True, mcp=True, no_canaries=True)
+
+    # Simulate the recorder having created these dirs (normally populated during a session).
+    (tmp_path / ".sandbox_logs").mkdir(exist_ok=True)
+    (tmp_path / ".trash").mkdir(exist_ok=True)
+
+    uninstall(tmp_path)
+
+    assert not (tmp_path / ".sandbox_logs").exists(), ".sandbox_logs should be removed when empty"
+    assert not (tmp_path / ".trash").exists(), ".trash should be removed when empty"
+
+
+def test_uninstall_keeps_nonempty_companion_dirs(tmp_path):
+    """Uninstall leaves .sandbox_logs/ and .trash/ alone when non-empty."""
+    from sandbox.connector.install import init_folder, uninstall
+
+    _git(["init", "-q"], tmp_path)
+    init_folder(tmp_path, claude=True, mcp=True, no_canaries=True)
+
+    (tmp_path / ".sandbox_logs").mkdir(exist_ok=True)
+    (tmp_path / ".sandbox_logs" / "session.log").write_text("log data")
+    (tmp_path / ".trash").mkdir(exist_ok=True)
+    (tmp_path / ".trash" / "old_file.py").write_text("saved file")
+
+    uninstall(tmp_path)
+
+    assert (tmp_path / ".sandbox_logs").is_dir(), ".sandbox_logs should be kept when non-empty"
+    assert (tmp_path / ".trash").is_dir(), ".trash should be kept when non-empty"

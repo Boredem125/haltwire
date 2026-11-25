@@ -25,6 +25,12 @@ const NODE = process.execPath;
 const NODE_DIR = path.dirname(NODE);
 const TMPBASE = process.env.TMP || process.env.TEMP || os.tmpdir();
 
+// Read the version from package.json so tests stay in sync after bumps.
+const PKG = JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "..", "package.json"), "utf8"));
+const VERSION = PKG.version;  // e.g. "0.1.2"
+// The tool-list output uv prints for the current version.
+const TOOL_LIST_CUR = "haltwire v" + VERSION + "\n- haltwire\n- sandbox";
+
 function mkTmp(label) {
   return fs.mkdtempSync(path.join(TMPBASE, "haltwire-test-" + label + "-"));
 }
@@ -249,7 +255,7 @@ describe("haltwire CLI - uv path (integration)", function () {
       fs.unlinkSync(fake.installMarker);
       fs.unlinkSync(fake.argvFile);
       var fake2 = buildFakeUv(tmp, {
-        toolListOutput: "haltwire v0.1.0\n- haltwire\n- sandbox",
+        toolListOutput: TOOL_LIST_CUR,
         binDir: fake.binDir,
         argvFile: fake.argvFile,
       });
@@ -262,7 +268,7 @@ describe("haltwire CLI - uv path (integration)", function () {
   it("passes args through to the installed haltwire", { skip: POSIX_ONLY }, function () {
     var tmp = mkTmp("uv-args");
     try {
-      var fake = buildFakeUv(tmp, { toolListOutput: "haltwire v0.1.0" });
+      var fake = buildFakeUv(tmp, { toolListOutput: TOOL_LIST_CUR });
       var r = run(["verify", "--verbose"], { PATH: path.dirname(fake.uvPath) });
       assert.equal(r.status, 0, "stderr: " + r.stderr);
       var recorded = JSON.parse(fs.readFileSync(fake.argvFile, "utf8"));
@@ -274,7 +280,7 @@ describe("haltwire CLI - uv path (integration)", function () {
   it("maps init with no path to init .", { skip: POSIX_ONLY }, function () {
     var tmp = mkTmp("uv-init");
     try {
-      var fake = buildFakeUv(tmp, { toolListOutput: "haltwire v0.1.0" });
+      var fake = buildFakeUv(tmp, { toolListOutput: TOOL_LIST_CUR });
       var r = run(["init"], { PATH: path.dirname(fake.uvPath) });
       assert.equal(r.status, 0, "stderr: " + r.stderr);
       var recorded = JSON.parse(fs.readFileSync(fake.argvFile, "utf8"));
@@ -287,7 +293,7 @@ describe("haltwire CLI - uv path (integration)", function () {
   it("propagates a non-zero exit code", { skip: POSIX_ONLY }, function () {
     var tmp = mkTmp("uv-exit");
     try {
-      var fake = buildFakeUv(tmp, { toolListOutput: "haltwire v0.1.0" });
+      var fake = buildFakeUv(tmp, { toolListOutput: TOOL_LIST_CUR });
       buildFakeHwExit(fake.binDir, 42);
       var r = run(["verify"], { PATH: path.dirname(fake.uvPath) });
       assert.equal(r.status, 42);
@@ -373,5 +379,52 @@ describe("haltwire CLI - error paths", function () {
       var r = run(["--install-uv", "--yes"], { PATH: interceptDir });
       assert.ok((r.stdout + r.stderr).includes("astral.sh/uv/install"));
     } finally { fs.rmSync(interceptDir, { recursive: true, force: true }); }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MSYS / Git Bash PATH handling (Windows)
+// ---------------------------------------------------------------------------
+
+describe("MSYS path handling (unit)", function () {
+  it("_msysToWin converts /d/tools/uv to D:\\tools\\uv", function () {
+    assert.equal(mod._msysToWin("/d/tools/uv"), "D:\\tools\\uv");
+  });
+  it("_msysToWin converts /c/Users/name to C:\\Users\\name", function () {
+    assert.equal(mod._msysToWin("/c/Users/name"), "C:\\Users\\name");
+  });
+  it("_msysToWin leaves Windows paths unchanged", function () {
+    assert.equal(mod._msysToWin("D:\\tools\\uv"), "D:\\tools\\uv");
+  });
+  it("_msysToWin converts bare /d to D:\\", function () {
+    assert.equal(mod._msysToWin("/d"), "D:\\");
+  });
+
+  it("_splitPath splits colon-separated MSYS paths on win32", { skip: !IS_WIN && "win32 only" }, function () {
+    var parts = mod._splitPath("/d/tools/uv:/c/Users/name/.local/bin");
+    assert.ok(parts.length >= 2, "expected at least 2 parts, got " + parts.length);
+    assert.ok(parts.some(function (p) { return /^D:/i.test(p) && p.includes("tools"); }),
+      "expected D:\\tools entry in " + JSON.stringify(parts));
+  });
+
+  it("_splitPath splits semicolons normally on win32", { skip: !IS_WIN && "win32 only" }, function () {
+    var parts = mod._splitPath("D:\\tools\\uv;C:\\Users\\name");
+    assert.equal(parts.length, 2);
+    assert.equal(parts[0], "D:\\tools\\uv");
+  });
+
+  it("resolver finds uv via MSYS path on win32", { skip: !IS_WIN && "win32 only" }, function () {
+    // Create a uv.exe in a temp dir, then resolve it via MSYS-style path.
+    var tmp = mkTmp("msys-resolve");
+    try {
+      fs.writeFileSync(path.join(tmp, "uv.exe"), "");
+      // Build an MSYS-style path, e.g. /d/tmp/haltwire-test-msys-resolve-xxx
+      var drive = tmp.charAt(0).toLowerCase();
+      var rest = tmp.substring(2).replace(/\\/g, "/");
+      var msysPath = "/" + drive + rest;
+      var r = mod._resolveRunner(msysPath);
+      assert.ok(r, "should find uv.exe via MSYS path");
+      assert.equal(r.manager, "uv");
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
   });
 });

@@ -26,14 +26,57 @@ const _SAFE_EXTS = IS_WIN ? [".exe", ".com"] : [""];
 // PATH search helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Convert an MSYS/Git-Bash-style path to a Windows path.
+ * /d/tools/uv  ->  D:\tools\uv
+ * /c/Users/... ->  C:\Users\...
+ * Leaves normal Windows paths and POSIX paths untouched.
+ */
+function _msysToWin(p) {
+  // Match /x/... where x is a single letter (drive letter).
+  var m = /^\/([A-Za-z])(\/.*)?$/.exec(p);
+  if (m) return m[1].toUpperCase() + ":" + (m[2] || "\\").replace(/\//g, "\\");
+  return p;
+}
+
+/**
+ * Split PATH, handling both `;` (Windows native) and `:` (MSYS / Git Bash).
+ * On win32, if PATH contains no `;` but does contain `:` after the first
+ * two chars (ruling out `C:\...`), split on `:` and convert MSYS paths.
+ */
+function _splitPath(pathStr) {
+  if (!pathStr) return [];
+  if (!IS_WIN) return pathStr.split(":").filter(Boolean);
+  // Normal Windows PATH uses `;`.
+  if (pathStr.indexOf(";") >= 0) {
+    return pathStr.split(";").filter(Boolean);
+  }
+  // No semicolons -- possibly MSYS colon-separated PATH.
+  // Split on `:` that is NOT immediately after a drive letter (X:).
+  var parts = pathStr.split(":").filter(Boolean);
+  var result = [];
+  for (var i = 0; i < parts.length; i++) {
+    // If the part is a single letter and the next part starts with \\ or /,
+    // rejoin them as a drive letter.
+    if (parts[i].length === 1 && /^[A-Za-z]$/.test(parts[i]) && i + 1 < parts.length) {
+      result.push(parts[i] + ":" + parts[i + 1]);
+      i++;
+    } else {
+      result.push(_msysToWin(parts[i]));
+    }
+  }
+  return result.filter(Boolean);
+}
+
 /** Find an executable *name* on PATH (or a single *override* dir). */
 function _findOnPath(name, override) {
   var dirs = override
     ? [override]
-    : (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+    : _splitPath(process.env.PATH || "");
   for (var i = 0; i < dirs.length; i++) {
+    var dir = IS_WIN ? _msysToWin(dirs[i]) : dirs[i];
     for (var j = 0; j < _SAFE_EXTS.length; j++) {
-      var p = path.join(dirs[i], name + _SAFE_EXTS[j]);
+      var p = path.join(dir, name + _SAFE_EXTS[j]);
       try { fs.accessSync(p, fs.constants.F_OK); return p; } catch (_) {}
     }
   }
@@ -54,7 +97,7 @@ function _resolveRunner(pathOverride) {
 
   // Windows: check for .cmd/.bat fallback for a helpful error message.
   if (IS_WIN && !pathOverride) {
-    var dirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+    var dirs = _splitPath(process.env.PATH || "");
     for (var n = 0; n < 2; n++) {
       var nm = n === 0 ? "uv" : "pipx";
       for (var d = 0; d < dirs.length; d++) {
@@ -334,4 +377,4 @@ if (require.main === module) {
 }
 
 // Export for unit testing.
-module.exports = { _resolveRunner, _ensureInstalled, _uvToolListHasVersion };
+module.exports = { _resolveRunner, _ensureInstalled, _uvToolListHasVersion, _msysToWin, _splitPath };
