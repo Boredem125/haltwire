@@ -51,31 +51,37 @@ b99c0e6bdd4e506583cd1e6d1314d3ce39be95f7:tests/security/test_m2_script_binding.p
 899ca532fabde1084b7016a3c1c1b9ec1096f838:arena/recordings/setup.json:stripe-access-token:255
 
 # -- Test fixtures with fake secret-shaped strings for detection/masking tests --
-# test_tw_agent.py: test-key-1234567890 env var fixture.
+# (Do not repeat the actual values in comments -- gitleaks scans this file too.)
+# test_tw_agent.py: fake env var fixture.
 899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_tw_agent.py:generic-api-key:654
-
-# test_attacker_server.py: sk_live_abc123 test fixture for secret detection.
+# test_attacker_server.py: fake Stripe-shaped fixture for secret detection.
 899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_attacker_server.py:generic-api-key:47
-
-# test_judge_secret.py: judge-Test_Secret-42 test fixture.
+# test_judge_secret.py: fake API-key-shaped fixture.
 899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_judge_secret.py:generic-api-key:19
-
-# test_sec_fixes.py: test-bolna-secret-12345678 env var fixture.
+# test_sec_fixes.py: fake env var fixture.
 899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_sec_fixes.py:generic-api-key:278
-
-# test_voice.py: sk_live_secret123 in error message assertion.
+# test_voice.py: fake Stripe-shaped value in error message assertion.
 899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_voice.py:generic-api-key:590
-
-# test_intent.py: sk_live_MaskMe1234567890abcd in masking/redaction tests.
+# test_intent.py: fake Stripe-shaped values in masking/redaction tests.
 899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_intent.py:stripe-access-token:871
 899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_intent.py:stripe-access-token:878
 899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_intent.py:stripe-access-token:879
 899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_intent.py:stripe-access-token:888
-
-# test_m2_t12_remote.py: fake Stripe keys in scrub/redaction assertion tests.
+# test_m2_t12_remote.py: fake Stripe-shaped keys in scrub/redaction assertion tests.
 899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/security/test_m2_t12_remote.py:stripe-access-token:1871
 899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/security/test_m2_t12_remote.py:stripe-access-token:1904
-
-# test_gchat.py: WEBHOOK URL with SECRETKEY/SECRETTOKEN for masking tests.
+# test_gchat.py: fake canary dict for masking tests.
 899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_gchat.py:stripe-access-token:33
 899ca532fabde1084b7016a3c1c1b9ec1096f838:tests/unit/test_gchat.py:generic-api-key:289
+
+# -- Commit db545a5: same demo canaries + new test file test_advreview_round2.py --
+# arena/duel.py: same fake FAKE_ENV Stripe canary (file unchanged, new commit).
+db545a5e9da1ffd8374502ed4c258514d648a2db:arena/duel.py:stripe-access-token:33
+# test_advreview_round2.py: fake Stripe-shaped values in masking tests.
+db545a5e9da1ffd8374502ed4c258514d648a2db:tests/unit/test_advreview_round2.py:stripe-access-token:275
+db545a5e9da1ffd8374502ed4c258514d648a2db:tests/unit/test_advreview_round2.py:stripe-access-token:277
+db545a5e9da1ffd8374502ed4c258514d648a2db:tests/unit/test_advreview_round2.py:stripe-access-token:286
+# .gitleaksignore itself: comments in db545a5 mentioned secret-shaped values
+# (now sanitized in the working tree; these cover the historical commit).
+db545a5e9da1ffd8374502ed4c258514d648a2db:.gitleaksignore:generic-api-key:60
+db545a5e9da1ffd8374502ed4c258514d648a2db:.gitleaksignore:stripe-access-token:69

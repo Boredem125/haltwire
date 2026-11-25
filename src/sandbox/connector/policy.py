@@ -257,6 +257,20 @@ class GovernanceControls(BaseModel):
 _ENROL_VALUES = ("first_use", "explicit")
 
 
+class CanaryTaintPolicy(BaseModel):
+    """Controls how canary taint (a canary seen in tool output) affects network calls.
+
+    Default: network calls ESCALATE (single human approval per call).
+    ``hard_deny_payload``: payload-carrying calls to non-allowlisted hosts are
+    hard-denied (curl -d, POST, scp, rsync, nc, ssh outbound, pip --index-url,
+    git push to non-origin).
+    ``strict``: when true, ALL tainted network calls are hard-denied (opt-in).
+    """
+
+    hard_deny_payload: bool = True
+    strict: bool = False
+
+
 class IntentPolicy(BaseModel):
     """AI intent judge settings (Gemini-based, raise-only).
 
@@ -318,6 +332,7 @@ class FolderPolicy(BaseModel):
     governance: GovernanceControls = Field(default_factory=GovernanceControls)
     keys: KeysPolicy = Field(default_factory=KeysPolicy)
     intent: IntentPolicy = Field(default_factory=IntentPolicy)
+    canary_taint: CanaryTaintPolicy = Field(default_factory=CanaryTaintPolicy)
     # dev | staging | prod, or None (unset: today's behaviour, SANDBOX_ENV still
     # read by the risk score). See docs/DATA_AND_ENVIRONMENT.md.
     environment: str | None = None

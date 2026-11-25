@@ -675,45 +675,131 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
             )
 
     # Canary taint: a canary appeared in earlier tool output (PostToolUse set
-    # canary_taint.json).  Network-class calls escalate until a human clears it.
-    # Raise-only: never lowers a verdict.  Same pattern as injection taint above.
+    # canary_taint.json).  Network-class calls escalate through the normal
+    # approval queue.  Payload-carrying calls to non-allowlisted hosts are
+    # hard-denied.  Strict mode: all network calls hard-denied (opt-in).
     _NETWORK_SHELL_CMDS = frozenset({
         "curl", "wget", "nc", "ncat", "scp", "ssh", "sftp", "rsync",
         "invoke-webrequest", "invoke-restmethod", "iwr", "irm",
     })
     _NETWORK_GIT_CMDS = frozenset({"push", "fetch", "pull", "clone", "remote"})
+    _INSTALL_CMDS = frozenset({"pip", "pip3", "npm", "yarn", "pnpm", "uv"})
+    _PAYLOAD_FLAGS = frozenset({"-d", "-F", "-T", "--data", "--data-raw",
+        "--data-binary", "--data-urlencode", "-X"})
+    _canary_tainted = False
     if result.verdict in ("allow", "observe", "escalate"):
         _ct_file = layout.state_dir / "canary_taint.json"
         if _ct_file.is_file():
-            _effective_ct = result.trigger or _action_class(tool_name)
-            _is_network_call = _effective_ct == "network"
-            # For shell commands, check if the command itself is a network command
-            if not _is_network_call and _effective_ct == "shell" and result.command:
-                _first_word = result.command.strip().split()[0].lower().replace(".exe", "") if result.command.strip() else ""
-                _is_network_call = _first_word in _NETWORK_SHELL_CMDS
-                # git push/fetch/pull/clone
-                if not _is_network_call and _first_word == "git":
-                    _git_parts = result.command.strip().split()
-                    if len(_git_parts) >= 2 and _git_parts[1].lower() in _NETWORK_GIT_CMDS:
-                        _is_network_call = True
-                # pip --index-url (exfil via custom PyPI)
-                if not _is_network_call and _first_word in ("pip", "pip3"):
-                    if "--index-url" in result.command or "-i " in result.command:
-                        _is_network_call = True
+            _ct_pol = getattr(policy, "canary_taint", None)
+            _ct_strict = getattr(_ct_pol, "strict", False) if _ct_pol else False
+            _ct_hard_deny_payload = getattr(_ct_pol, "hard_deny_payload", True) if _ct_pol else True
 
-            if _is_network_call:
-                _ct_reason = (
-                    "SANDBOX DENIED [CANARY_TAINT]: a canary value appeared in "
-                    "earlier tool output; network access needs human approval. "
-                    "Run `sandbox unfreeze` or `sandbox clear-taint` to clear."
+            # Read taint metadata for the approval/alert content
+            _ct_meta = {}
+            try:
+                _ct_meta = json.loads(_ct_file.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                pass
+
+            _effective_ct = result.trigger or _action_class(tool_name)
+            _is_network = _effective_ct == "network"
+
+            # For shell commands, scan ALL words (not just first) for network tools.
+            _cmd_low = (result.command or "").lower()
+            _cmd_words: list[str] = _cmd_low.split() if _cmd_low else []
+            _all_words: set[str] = {w.rsplit("/", 1)[-1].replace(".exe", "") for w in _cmd_words}
+            if not _is_network and _effective_ct == "shell" and _cmd_low:
+                _is_network = bool(_all_words & _NETWORK_SHELL_CMDS)
+                if not _is_network:
+                    _is_network = bool(_all_words & _INSTALL_CMDS)
+                # git push/fetch/pull/clone
+                if not _is_network and "git" in _all_words:
+                    for _gi, _gw in enumerate(_cmd_words):
+                        if _gw.endswith("git") or _gw == "git":
+                            if _gi + 1 < len(_cmd_words) and _cmd_words[_gi + 1] in _NETWORK_GIT_CMDS:
+                                _is_network = True
+                                break
+                # python -c "import requests/urllib"
+                if not _is_network:
+                    if "requests" in _cmd_low or "urllib" in _cmd_low or "httpx" in _cmd_low:
+                        if "python" in _cmd_low or "python3" in _cmd_low:
+                            _is_network = True
+
+            if _is_network:
+                _canary_tainted = True
+
+                # Determine if this is a hard-deny-payload call
+                _hard_deny = False
+                if _ct_strict:
+                    _hard_deny = True
+                elif _ct_hard_deny_payload and _cmd_low:
+                    # Payload-carrying: curl -d/-F/-T/--data*, -X POST/PUT
+                    _payload_lc = {f.lower() for f in _PAYLOAD_FLAGS}
+                    if any(w in _payload_lc for w in _cmd_words):
+                        for _xi, _xw in enumerate(_cmd_words):
+                            if _xw == "-x" and _xi + 1 < len(_cmd_words):
+                                if _cmd_words[_xi + 1] in ("post", "put", "patch"):
+                                    _hard_deny = True
+                        if not _hard_deny:
+                            _data_flags = {"-d", "-f", "-t", "--data",
+                                           "--data-raw", "--data-binary", "--data-urlencode"}
+                            if any(w in _data_flags for w in _cmd_words):
+                                _hard_deny = True
+                    # wget --post-*
+                    if "wget" in _all_words and "--post-" in _cmd_low:
+                        _hard_deny = True
+                    # scp, rsync, nc, ssh: always payload-carrying
+                    if _all_words & {"scp", "rsync", "nc", "ncat", "ssh"}:
+                        _hard_deny = True
+                    # git push to non-origin
+                    if "git" in _all_words:
+                        for _gi, _gw in enumerate(_cmd_words):
+                            if _gw.endswith("git") or _gw == "git":
+                                if (_gi + 1 < len(_cmd_words)
+                                        and _cmd_words[_gi + 1] == "push"
+                                        and _gi + 2 < len(_cmd_words)
+                                        and _cmd_words[_gi + 2] != "origin"):
+                                    _hard_deny = True
+                    # pip --index-url/--extra-index-url
+                    if _all_words & {"pip", "pip3"}:
+                        if "--index-url" in _cmd_low or "--extra-index-url" in _cmd_low:
+                            _hard_deny = True
+
+                _ct_taint_info = (
+                    f"canary seen in output of {_ct_meta.get('tool', 'unknown')} "
+                    f"at {time.strftime('%H:%M:%S', time.localtime(_ct_meta.get('ts', 0)))}"
                 )
-                _audit(layout, session_id, {
-                    "event": "canary_taint_escalated", "tool": tool_name,
-                    "reason_code": "CANARY_TAINT",
-                    "command": result.command,
-                    "identity": identity.to_dict() if identity else {},
-                })
-                return _pre_output("deny", _ct_reason)
+
+                if _hard_deny:
+                    _audit(layout, session_id, {
+                        "event": "canary_taint_denied", "tool": tool_name,
+                        "reason_code": "CANARY_TAINT",
+                        "command": result.command,
+                        "taint_info": _ct_taint_info,
+                        "identity": identity.to_dict() if identity else {},
+                    })
+                    return _pre_output("deny", (
+                        f"SANDBOX DENIED [CANARY_TAINT]: {_ct_taint_info}; "
+                        "this call carries a payload to a non-allowlisted destination "
+                        "and is blocked. Run `haltwire unfreeze` to clear taint."
+                    ))
+                else:
+                    # Escalate: set the result and let the normal flow handle it.
+                    if result.verdict in ("allow", "observe"):
+                        result.verdict = "escalate"
+                    result.reason_code = "CANARY_TAINT"
+                    result.reason = (
+                        f"canary taint active ({_ct_taint_info}); "
+                        "network access needs one human approval. "
+                        "Approving does not clear taint."
+                    )
+                    _audit(layout, session_id, {
+                        "event": "canary_taint_escalated", "tool": tool_name,
+                        "reason_code": "CANARY_TAINT",
+                        "command": result.command,
+                        "taint_info": _ct_taint_info,
+                        "identity": identity.to_dict() if identity else {},
+                    })
 
     # Governance clauses on non-shell calls (MCP tools, WebFetch). Until now no
     # clause saw them: an allowlisted mcp__stripe__create_refund ran silently.
@@ -776,7 +862,8 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
     # A workspace code runner is never upgraded by a remembered decision (ADR 0009): one
     # approval of the first test run would cover every later run of code the agent wrote.
     if (result.verdict == "escalate" and not result.requires_dual and not money_floor_hit
-            and result.reason_code != "WORKSPACE_RUNNER"):
+            and result.reason_code != "WORKSPACE_RUNNER"
+            and not _canary_tainted):
         memory = DecisionMemory(layout.remembered, session_id)
         remembered = memory.recall(
             command=result.command,
@@ -1530,8 +1617,19 @@ async def post_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[s
                         try:
                             _taint_file = layout.state_dir / "canary_taint.json"
                             _taint_file.write_text(json.dumps(_taint_data), encoding="utf-8")
-                        except Exception:  # noqa: BLE001
-                            pass
+                        except Exception as _tw_exc:  # noqa: BLE001
+                            # Fail-closed: if taint write fails, fall back to quarantine
+                            _audit(layout, session_id, {
+                                "event": "taint_error", "tool": tool_name,
+                                "error": str(_tw_exc)[:200],
+                            })
+                            try:
+                                layout.quarantine_flag.write_text(json.dumps({
+                                    "reason": "taint_write_failed",
+                                    "trip_kind": "canary_exfil_output",
+                                }), encoding="utf-8")
+                            except Exception:  # noqa: BLE001
+                                pass
                         _audit(layout, session_id, {
                             "event": "canary_taint", "tool": tool_name,
                             "reason_code": "CANARY_TAINT",

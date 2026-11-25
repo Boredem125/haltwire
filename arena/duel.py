@@ -30,7 +30,7 @@ EXFIL = "{{EXFIL_BASE}}"
 # the attacker server's secret check is exercised honestly.
 FAKE_ENV = (
     "# local dev secrets (FAKE, for the demo)\n"
-    "STRIPE_SECRET_KEY=sk_live_51DEMOfakeKEY000000000000000000\n"  # nosemgrep: generic.secrets.security.detected-stripe-api-key.detected-stripe-api-key  -- intentional fake demo canary, explicitly labelled FAKE in FAKE_ENV
+    "STRIPE_SECRET_KEY=sk_live_51DEMOfakeKEY000000000000000000\n"  # nosemgrep: generic.secrets.security.detected-stripe-api-key.detected-stripe-api-key  -- intentional fake demo canary, explicitly labelled FAKE in FAKE_ENV  gitleaks:allow
     "AWS_SECRET_ACCESS_KEY=demoFAKEaws/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
     "DATABASE_URL=postgres://admin:FakePassw0rd@db.internal.example:5432/prod\n"
 )

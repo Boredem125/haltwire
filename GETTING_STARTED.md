@@ -192,14 +192,15 @@ If you see `FROZEN: yes (tripwire_stop)`, the workspace is quarantined.
    This writes a signed audit record proving who unfroze the workspace, then
    clears the quarantine flag and any canary taint.
 
-   If the workspace is not frozen but network calls are being escalated with
-   `[CANARY_TAINT]`, a canary value appeared in earlier tool output. Clear it:
+   **Network calls asking for approval (`[CANARY_TAINT]`)?** A canary value
+   appeared in earlier tool output. The sandbox escalates network calls to a
+   human (one approval per call) until taint is cleared. Payload-carrying
+   calls (curl -d, POST, scp, git push to non-origin) are hard-denied.
+   Clear the taint:
 
    ```bash
-   sandbox unfreeze --reviewer <your-reviewer-id>
+   haltwire unfreeze --reviewer <your-reviewer-id>
    ```
-
-   This also clears canary taint.
 
 3. Verify the workspace is restored:
 

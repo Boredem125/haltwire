@@ -9,7 +9,7 @@
     "bin/"
   ],
   "scripts": {
-    "test": "node --test npm/test/*.test.js"
+    "test": "node --test npm/test/haltwire.test.js"
   },
   "engines": {
     "node": ">=18"

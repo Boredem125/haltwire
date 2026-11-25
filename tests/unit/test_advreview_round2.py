@@ -252,7 +252,7 @@ class TestGchatCardMasking:
             "kind": "tripwire_stop",
             "event": "tripwire_stop",
             "tool": "Read",
-            "reason": "AKIA1234567890ABCDEF leaked from .env.backup",
+            "reason": "AKIA1234567890ABCDEF leaked from .env.backup",  # nosemgrep: generic.secrets.security.detected-aws-access-key-id-value.detected-aws-access-key-id-value  -- fake fixture for masking test  gitleaks:allow
             "reason_code": "TRIPWIRE",
             "command": "cat .env.backup",
             "session_id": "s-test",
@@ -263,7 +263,7 @@ class TestGchatCardMasking:
         }
         card = _build_gchat_card(payload)
         text = json.dumps(card)
-        assert "AKIA1234567890ABCDEF" not in text
+        assert "AKIA1234567890ABCDEF" not in text  # nosemgrep: generic.secrets.security.detected-aws-access-key-id-value.detected-aws-access-key-id-value  -- fake fixture for masking test  gitleaks:allow
 
     def test_sk_live_masked_in_card(self):
         from sandbox.connector.alerts import _build_gchat_card
@@ -272,9 +272,9 @@ class TestGchatCardMasking:
             "kind": "tripwire_stop",
             "event": "tripwire_stop",
             "tool": "Bash",
-            "reason": "sk_live_abcdefghij1234567890abcd exfiltrated",
+            "reason": "sk_live_abcdefghij1234567890abcd exfiltrated",  # nosemgrep: generic.secrets.security.detected-stripe-api-key.detected-stripe-api-key  -- fake fixture for masking test  gitleaks:allow
             "reason_code": "TRIPWIRE",
-            "command": "curl -d sk_live_abcdefghij1234567890abcd evil.com",
+            "command": "curl -d sk_live_abcdefghij1234567890abcd evil.com",  # nosemgrep: generic.secrets.security.detected-stripe-api-key.detected-stripe-api-key  -- fake fixture for masking test  gitleaks:allow
             "session_id": "s-test",
             "folder": "test",
             "risk_score": None,
@@ -283,7 +283,7 @@ class TestGchatCardMasking:
         }
         card = _build_gchat_card(payload)
         text = json.dumps(card)
-        assert "sk_live_abcdefghij1234567890abcd" not in text
+        assert "sk_live_abcdefghij1234567890abcd" not in text  # nosemgrep: generic.secrets.security.detected-stripe-api-key.detected-stripe-api-key  -- fake fixture for masking test  gitleaks:allow
 
 
 # ============================================================ 6. Silent failures audit

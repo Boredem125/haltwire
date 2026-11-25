@@ -66,7 +66,7 @@ BASE = "https://tripwire.example.test"
 CANARIES = {
     "aws_access_key": "AKIAFAKECANARY1234567",
     "aws_secret": "wJalrFAKEsecretCANARYvalue0123456789abcd",
-    "stripe_key": "sk_live_FAKECANARYstripe0123456789",
+    "stripe_key": "sk_live_FAKECANARYstripe0123456789",  # nosemgrep: generic.secrets.security.detected-stripe-api-key.detected-stripe-api-key  -- fake fixture for masking test  gitleaks:allow
     "pem_key": "-----BEGIN PRIVATE KEY-----\nMIIEFAKEPEMCANARYLINEONE0123456789\n-----END PRIVATE KEY-----",
     "postgres_url": "postgres://admin:FAKEpgPASS99@db.internal:5432/prod",
 }
