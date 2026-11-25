@@ -1,0 +1,41 @@
+# Local API (`sandbox serve` equivalent) in a hardened container: non-root
+# user, read-only root filesystem, no capabilities, no privilege escalation.
+# Tokens come from the environment; nothing secret is baked into the image.
+# The control-plane stack (Postgres, OIDC) is ADR 0005, from M1.
+services:
+  sandbox-api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.sandbox
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      - SANDBOX_ENVIRONMENT=production
+      - SANDBOX_LOG_LEVEL=INFO
+      # Required: the API refuses unauthenticated requests, and with several
+      # workers per-process generated tokens would differ between workers.
+      - SANDBOX_AGENT_TOKEN=${SANDBOX_AGENT_TOKEN:?set SANDBOX_AGENT_TOKEN}
+      - SANDBOX_APPROVER_TOKEN=${SANDBOX_APPROVER_TOKEN:?set SANDBOX_APPROVER_TOKEN}
+      - AUDIT_LOG_DIR=/data/audit_logs
+      - SNAPSHOT_STORAGE_DIR=/data/snapshots
+    volumes:
+      - audit-data:/data/audit_logs
+      - snapshot-data:/data/snapshots
+    networks:
+      - sandbox-net
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+networks:
+  sandbox-net:
+    driver: bridge
+
+volumes:
+  audit-data:
+  snapshot-data:

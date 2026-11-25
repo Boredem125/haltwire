@@ -1,0 +1,10 @@
+{
+  "agent_id": "",
+  "agent_name": "",
+  "created": "",
+  "llm": "",
+  "tts": "",
+  "stt": "",
+  "extraction": "",
+  "notes": "Copy to phone_agent.json and fill in your Bolna agent details."
+}

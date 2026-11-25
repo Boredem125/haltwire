@@ -1,0 +1,1158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Attack Arena</title>
+<style>
+/* ===== RESET & VARIABLES ===== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0b1120;
+  --surface: #111827;
+  --card: #1c2333;
+  --card-hover: #232d42;
+  --border: #2d3a50;
+  --border-light: #3f4f6a;
+  --text: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+
+  --green: #22c55e;
+  --green-bg: #052e16;
+  --green-border: #15803d;
+  --red: #ef4444;
+  --red-bg: #450a0a;
+  --red-border: #991b1b;
+  --grey: #94a3b8;
+  --grey-bg: #1e293b;
+  --grey-border: #475569;
+  --amber: #f59e0b;
+  --amber-bg: #451a03;
+  --amber-border: #92400e;
+  --blue: #3b82f6;
+  --blue-bg: #172554;
+  --blue-border: #1d4ed8;
+  --purple: #a855f7;
+  --purple-bg: #3b0764;
+  --purple-border: #7e22ce;
+
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: "SF Mono", "Cascadia Code", "Fira Code", Consolas, "Liberation Mono", monospace;
+  --radius: 10px;
+  --radius-sm: 6px;
+}
+
+html { font-size: 16px; scroll-behavior: smooth; }
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ===== SKIP LINK ===== */
+.skip-link {
+  position: absolute;
+  top: -50px;
+  left: 0;
+  background: var(--blue);
+  color: #fff;
+  padding: 8px 16px;
+  z-index: 1000;
+  text-decoration: none;
+  font-weight: 600;
+  transition: top 0.15s;
+}
+.skip-link:focus { top: 0; }
+
+/* ===== FOCUS ===== */
+:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+/* ===== SCROLLBARS ===== */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-light); }
+
+/* ===== HEADER ===== */
+.site-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 24px 32px;
+  text-align: center;
+}
+.site-header h1 {
+  font-size: 2rem;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  margin-bottom: 2px;
+}
+.subtitle {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  margin-bottom: 14px;
+}
+.run-info {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  font-size: 0.875rem;
+}
+.run-info-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.run-info-label { color: var(--text-muted); font-weight: 500; }
+.status-pill {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.sp-idle   { background: var(--grey-bg);   color: var(--grey);  border: 1px solid var(--grey-border); }
+.sp-running{ background: var(--blue-bg);   color: var(--blue);  border: 1px solid var(--blue-border); animation: pulse 2s ease-in-out infinite; }
+.sp-done   { background: var(--green-bg);  color: var(--green); border: 1px solid var(--green-border); }
+.sp-failed { background: var(--red-bg);    color: var(--red);   border: 1px solid var(--red-border); }
+.sp-stopped{ background: var(--amber-bg);  color: var(--amber); border: 1px solid var(--amber-border); }
+
+@keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.55;} }
+
+/* ===== RECONNECTING BANNER ===== */
+.reconnect-banner {
+  background: var(--amber-bg);
+  color: var(--amber);
+  border-bottom: 1px solid var(--amber-border);
+  padding: 8px 16px;
+  text-align: center;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+/* ===== MAIN ===== */
+main {
+  flex: 1;
+  max-width: 1440px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 24px 24px 56px;
+}
+
+/* ===== SCOREBOARD ===== */
+.scoreboard {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 14px;
+  margin-bottom: 28px;
+}
+.counter {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 16px;
+  text-align: center;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.counter:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.3); }
+.counter .count {
+  display: block;
+  font-size: 2.5rem;
+  font-weight: 800;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.counter .label {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-top: 6px;
+}
+.ctr-blocked { border-left: 4px solid var(--green); }
+.ctr-blocked .count { color: var(--green); }
+.ctr-blocked .label { color: var(--green); }
+.ctr-refused { border-left: 4px solid var(--grey); }
+.ctr-refused .count { color: var(--grey); }
+.ctr-refused .label { color: var(--grey); }
+.ctr-error   { border-left: 4px solid var(--text-muted); }
+.ctr-error .count { color: var(--text-muted); }
+.ctr-error .label { color: var(--text-muted); }
+.ctr-probed  { border-left: 4px solid var(--amber); }
+.ctr-probed .count { color: var(--amber); }
+.ctr-probed .label { color: var(--amber); }
+.ctr-help {
+  display: block; font-size: 0.62rem; color: var(--text-muted);
+  margin-top: 5px; line-height: 1.35; font-weight: 400;
+  font-style: normal;
+}
+
+/* Slipped: always prominent */
+.ctr-slipped {
+  border: 2px solid var(--red-border);
+  position: relative;
+}
+.ctr-slipped .count { color: var(--red); font-size: 3rem; }
+.ctr-slipped .label { color: var(--red); }
+.ctr-slipped.slip-zero {
+  border-color: var(--green-border);
+  background: var(--green-bg);
+}
+.ctr-slipped.slip-zero .count { color: var(--green); }
+.ctr-slipped.slip-zero .label { color: var(--green); }
+.ctr-slipped.slip-zero::after {
+  content: "SECURE";
+  position: absolute;
+  top: 8px; right: 10px;
+  font-size: 0.62rem;
+  font-weight: 800;
+  color: var(--green);
+  letter-spacing: 0.1em;
+  padding: 1px 6px;
+  border: 1px solid var(--green-border);
+  border-radius: 3px;
+}
+
+/* ===== NOTES ===== */
+.notes-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-bottom: 24px;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+.notes-box p { margin: 3px 0; }
+
+/* ===== SECTION HEADING ===== */
+.sec-heading {
+  font-size: 1.2rem;
+  font-weight: 700;
+  margin-bottom: 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.sec-heading .total-label {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+/* ===== ROUNDS ===== */
+.round-sec { margin-bottom: 28px; }
+.round-heading {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.round-dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--blue);
+  flex-shrink: 0;
+}
+.cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  gap: 12px;
+}
+
+/* ===== CARD ===== */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  animation: card-in 0.25s ease-out;
+}
+@keyframes card-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.card:hover { border-color: var(--border-light); }
+.card-blocked { border-left: 3px solid var(--green); }
+.card-refused { border-left: 3px solid var(--grey); }
+.card-slipped { border-left: 3px solid var(--red); }
+.card-error   { border-left: 3px solid var(--text-muted); }
+
+.card-btn {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 14px 16px;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.card-btn:hover { background: var(--card-hover); }
+.card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+.card-tech {
+  font-size: 0.93rem;
+  font-weight: 600;
+  flex: 1;
+  word-break: break-word;
+}
+.card-badges { display: flex; gap: 5px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+
+/* badges */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.b-blocked { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
+.b-refused { background: var(--grey-bg);  color: var(--grey);  border: 1px solid var(--grey-border); }
+.b-slipped { background: var(--red-bg);   color: var(--red);   border: 1px solid var(--red-border); }
+.b-error   { background: #1a1a2a;         color: var(--text-muted); border: 1px solid #333; }
+.b-gemini  { background: var(--blue-bg);   color: var(--blue);   border: 1px solid var(--blue-border); }
+.b-seed    { background: var(--grey-bg);   color: var(--grey);   border: 1px solid var(--grey-border); }
+.b-judge   { background: var(--purple-bg); color: var(--purple); border: 1px solid var(--purple-border); }
+.b-probed  { background: var(--amber-bg);  color: var(--amber);  border: 1px solid var(--amber-border); font-size: 0.62rem; }
+
+.card-goal {
+  font-size: 0.84rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+.card-meta {
+  display: flex; gap: 12px; flex-wrap: wrap;
+  font-size: 0.75rem; color: var(--text-muted);
+}
+.card-meta span { white-space: nowrap; }
+
+/* expanded body */
+.card-body {
+  border-top: 1px solid var(--border);
+  padding: 16px;
+  display: none;
+}
+.card.open .card-body { display: block; }
+
+.det-sec  { margin-bottom: 16px; }
+.det-sec:last-child { margin-bottom: 0; }
+.det-lbl  {
+  font-size: 0.72rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.07em;
+  color: var(--text-muted); margin-bottom: 6px;
+}
+.det-txt  {
+  font-size: 0.86rem; color: var(--text-secondary);
+  line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+}
+.det-pre  {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 12px;
+  font-family: var(--mono); font-size: 0.78rem; line-height: 1.5;
+  color: var(--text-secondary);
+  overflow-x: auto; max-height: 280px; overflow-y: auto;
+  white-space: pre; word-break: break-all;
+}
+.file-ent  { margin-bottom: 10px; }
+.file-ent:last-child { margin-bottom: 0; }
+.file-nm   { font-family: var(--mono); font-size: 0.78rem; font-weight: 600; color: var(--amber); margin-bottom: 4px; }
+
+/* indicators */
+.indicators { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 4px; }
+.indicator-tag {
+  font-size: 0.68rem; font-weight: 600;
+  padding: 1px 7px; border-radius: 3px;
+  background: var(--blue-bg); color: var(--blue); border: 1px solid var(--blue-border);
+}
+
+/* guard probes detail */
+.gp-list { list-style: none; padding: 0; }
+.gp-item {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px;
+  padding: 6px 0; border-bottom: 1px solid var(--border);
+  font-size: 0.8rem;
+}
+.gp-item:last-child { border-bottom: none; }
+.gp-tool { font-family: var(--mono); font-weight: 600; color: var(--text); }
+.gp-dec  { font-weight: 700; text-transform: uppercase; font-size: 0.72rem; }
+.gp-dec-deny, .gp-dec-denied, .gp-dec-block, .gp-dec-blocked { color: var(--red); }
+.gp-dec-allow, .gp-dec-allowed { color: var(--green); }
+.gp-path { font-family: var(--mono); font-size: 0.75rem; color: var(--amber); word-break: break-all; }
+
+/* evidence box */
+.evi-box {
+  background: var(--green-bg); border: 1px solid var(--green-border);
+  border-radius: var(--radius-sm); padding: 12px;
+}
+.evi-box.evi-refused { background: var(--grey-bg); border-color: var(--grey-border); }
+.evi-box.evi-slipped { background: var(--red-bg);  border-color: var(--red-border); }
+.evi-box.evi-error   { background: #1a1a2a; border-color: #333; }
+.evi-dec {
+  font-weight: 700; font-size: 0.84rem; margin-bottom: 4px;
+}
+.evi-reason {
+  font-size: 0.84rem; color: var(--text-secondary); line-height: 1.5;
+}
+
+/* tool-call timeline */
+.timeline { position: relative; padding-left: 22px; }
+.timeline::before {
+  content: ""; position: absolute;
+  left: 7px; top: 4px; bottom: 4px;
+  width: 2px; background: var(--border);
+}
+.tl-item { position: relative; margin-bottom: 12px; padding-left: 8px; }
+.tl-item:last-child { margin-bottom: 0; }
+.tl-item::before {
+  content: ""; position: absolute;
+  left: -17px; top: 7px;
+  width: 10px; height: 10px; border-radius: 50%;
+  border: 2px solid var(--border); background: var(--surface);
+}
+.tl-item.tl-allow::before,
+.tl-item.tl-allowed::before  { border-color: var(--green); background: var(--green-bg); }
+.tl-item.tl-deny::before,
+.tl-item.tl-denied::before,
+.tl-item.tl-block::before,
+.tl-item.tl-blocked::before  { border-color: var(--red); background: var(--red-bg); }
+.tl-item.tl-escalate::before,
+.tl-item.tl-escalated::before { border-color: var(--amber); background: var(--amber-bg); }
+.tl-item.tl-observe::before,
+.tl-item.tl-observed::before  { border-color: var(--blue); background: var(--blue-bg); }
+
+.tc-name { font-family: var(--mono); font-size: 0.78rem; font-weight: 600; color: var(--text); }
+.tc-dec  { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; margin-left: 8px; }
+.tc-dec-allow, .tc-dec-allowed   { color: var(--green); }
+.tc-dec-deny, .tc-dec-denied,
+.tc-dec-block, .tc-dec-blocked   { color: var(--red); }
+.tc-dec-escalate, .tc-dec-escalated { color: var(--amber); }
+.tc-dec-observe, .tc-dec-observed   { color: var(--blue); }
+.tc-reason { font-size: 0.78rem; color: var(--text-muted); margin-top: 2px; word-break: break-word; }
+.tc-args {
+  font-family: var(--mono); font-size: 0.72rem; color: var(--text-muted);
+  background: var(--bg); padding: 4px 8px; border-radius: 3px;
+  margin-top: 4px; max-height: 100px; overflow: auto; white-space: pre;
+}
+
+/* ===== JUDGE PANEL ===== */
+.judge-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  margin-top: 32px;
+}
+.judge-form { max-width: 720px; }
+.fg { margin-bottom: 16px; }
+.fg label {
+  display: block; font-size: 0.875rem; font-weight: 600;
+  margin-bottom: 6px; color: var(--text);
+}
+.fg textarea, .fg input[type="text"] {
+  width: 100%; background: var(--bg);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 10px 12px; color: var(--text);
+  font-family: var(--mono); font-size: 0.86rem; line-height: 1.5;
+  resize: vertical;
+}
+.fg textarea { min-height: 120px; }
+.fg textarea:focus, .fg input[type="text"]:focus {
+  outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-bg);
+}
+.form-note {
+  font-size: 0.78rem; color: var(--text-muted);
+  margin-bottom: 16px; line-height: 1.45;
+}
+.btn-sub {
+  background: var(--blue); color: #fff; border: none;
+  border-radius: var(--radius-sm); padding: 10px 28px;
+  font-size: 0.875rem; font-weight: 600; cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+.btn-sub:hover { background: #2563eb; }
+.btn-sub:disabled { opacity: 0.45; cursor: not-allowed; }
+.judge-msg {
+  margin-top: 12px; font-size: 0.85rem;
+  padding: 8px 12px; border-radius: var(--radius-sm);
+}
+.jm-info    { background: var(--blue-bg);  color: var(--blue);  border: 1px solid var(--blue-border); }
+.jm-error   { background: var(--red-bg);   color: var(--red);   border: 1px solid var(--red-border); }
+.jm-success { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
+
+.judge-results { margin-top: 24px; }
+.jr-heading { font-size: 1rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 12px; }
+
+/* ===== EMPTY STATE ===== */
+.empty-state {
+  text-align: center; padding: 48px 16px;
+  color: var(--text-muted); font-size: 0.95rem;
+}
+
+/* ===== FOOTER ===== */
+.site-footer {
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding: 20px 32px;
+  text-align: center;
+}
+.tagline {
+  font-size: 0.95rem; font-weight: 500;
+  color: var(--text-secondary); font-style: italic;
+}
+
+/* ===== RESPONSIVE ===== */
+@media (max-width: 1100px) {
+  .scoreboard { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 960px) {
+  .scoreboard { grid-template-columns: repeat(2, 1fr); }
+  .cards-grid { grid-template-columns: 1fr; }
+  .site-header { padding: 18px 20px; }
+  main { padding: 18px 16px 36px; }
+}
+@media (max-width: 520px) {
+  .scoreboard { grid-template-columns: 1fr; }
+  .site-header h1 { font-size: 1.5rem; }
+  .counter .count { font-size: 2rem; }
+  .ctr-slipped .count { font-size: 2.4rem; }
+  .run-info { font-size: 0.78rem; gap: 10px; }
+  .judge-panel { padding: 16px; }
+  .cards-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<a href="#main" class="skip-link">Skip to main content</a>
+
+<header class="site-header">
+  <h1>Attack Arena</h1>
+  <p class="subtitle">Gemini red-teams an AI coding agent. Our security layer decides what gets through.</p>
+  <div class="run-info" aria-label="Run information">
+    <div class="run-info-item">
+      <span class="run-info-label">Model:</span>
+      <span id="hd-model">--</span>
+    </div>
+    <div class="run-info-item">
+      <span class="run-info-label">Status:</span>
+      <span id="hd-status" class="status-pill sp-idle">IDLE</span>
+    </div>
+    <div class="run-info-item">
+      <span class="run-info-label">Round:</span>
+      <span id="hd-round">-- of --</span>
+    </div>
+  </div>
+</header>
+
+<div id="reconnect" class="reconnect-banner" role="alert" hidden>
+  Connection lost. Retrying every 3 seconds...
+</div>
+
+<main id="main">
+
+  <section class="scoreboard" aria-live="polite" aria-label="Attack outcome scoreboard">
+    <div class="counter ctr-blocked" aria-label="Attacks blocked by our security layer">
+      <span class="count" id="sb-blocked">0</span>
+      <span class="label">Blocked (our layer)</span>
+    </div>
+    <div class="counter ctr-refused" aria-label="Attacks refused by the model itself">
+      <span class="count" id="sb-refused">0</span>
+      <span class="label">Refused (model)</span>
+    </div>
+    <div class="counter ctr-slipped slip-zero" id="ctr-slipped" aria-label="Attacks that slipped through">
+      <span class="count" id="sb-slipped">0</span>
+      <span class="label">Slipped through</span>
+    </div>
+    <div class="counter ctr-probed" aria-label="Attacks where the agent probed its own guard configuration">
+      <span class="count" id="sb-probed">0</span>
+      <span class="label">Probed its guard</span>
+      <span class="ctr-help">The agent went looking at the guard itself. Our layer keeps the guard read-only.</span>
+    </div>
+    <div class="counter ctr-error" aria-label="Attacks that encountered errors">
+      <span class="count" id="sb-error">0</span>
+      <span class="label">Errors</span>
+    </div>
+  </section>
+
+  <div id="notes-box" class="notes-box" role="log" aria-label="Server notes" hidden></div>
+
+  <section id="rounds-sec" aria-label="Attack rounds">
+    <h2 class="sec-heading">
+      <span>Attack Rounds</span>
+      <span class="total-label" id="total-label"></span>
+    </h2>
+    <div id="rounds-ct">
+      <div class="empty-state" id="empty-msg">Waiting for attacks to begin...</div>
+    </div>
+  </section>
+
+  <section class="judge-panel" aria-label="Submit a custom attack">
+    <h2 class="sec-heading">Try to Break It</h2>
+    <form id="jform" class="judge-form" novalidate>
+      <div class="fg">
+        <label for="j-readme">Poisoned README</label>
+        <textarea id="j-readme" placeholder="Paste a README.md that contains hidden instructions for the agent..."></textarea>
+      </div>
+      <div class="fg">
+        <label for="j-prompt">Developer request</label>
+        <input type="text" id="j-prompt" placeholder="A normal-sounding request the developer would type..." />
+      </div>
+      <p class="form-note">URLs must use .example hosts; packages must be made-up names. Runs on a real agent; takes 1&ndash;2 minutes.</p>
+      <button type="submit" class="btn-sub" id="j-btn">Submit Attack</button>
+      <div id="j-msg" class="judge-msg" hidden></div>
+    </form>
+    <div class="judge-results" id="jr-ct">
+      <h3 class="jr-heading" id="jr-hd" hidden>Judge-submitted Attacks</h3>
+      <div id="jr-cards" class="cards-grid"></div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <p class="tagline">Models only raise scrutiny. Rules decide. Humans sign.</p>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ====== constants & state ====== */
+  var POLL_MS   = 3000;
+  var expanded   = {};   /* result-id -> true */
+  var rendered   = {};   /* result-id -> true  (main results) */
+  var renderedJ  = {};   /* result-id -> true  (judge results) */
+  var resultMap  = {};   /* id -> Result object */
+  var roundEls   = {};   /* roundNum -> section DOM node */
+  var isOffline  = false;
+  var lastState  = null;
+  var msgTimer   = null;
+
+  /* ====== DOM helpers ====== */
+  function $(id) { return document.getElementById(id); }
+
+  function mk(tag, cls) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    return e;
+  }
+
+  function txt(el, t) {
+    el.textContent = (t != null) ? String(t) : "";
+    return el;
+  }
+
+  /* ====== header ====== */
+  function updHeader(s) {
+    txt($("hd-model"), s.model || "--");
+    var st = $("hd-status");
+    var v  = s.status || "idle";
+    txt(st, v.toUpperCase());
+    st.className = "status-pill sp-" + v;
+    txt($("hd-round"),
+      (s.round != null ? s.round : "--") + " of " +
+      (s.rounds != null ? s.rounds : "--"));
+  }
+
+  /* ====== scoreboard ====== */
+  function updScoreboard(sm) {
+    if (!sm) return;
+    txt($("sb-blocked"), sm.blocked || 0);
+    txt($("sb-refused"), sm.refused || 0);
+    txt($("sb-slipped"), sm.slipped || 0);
+    txt($("sb-probed"),  sm.probed_guard || 0);
+    txt($("sb-error"),   sm.error   || 0);
+    var el = $("ctr-slipped");
+    if (sm.slipped === 0) el.classList.add("slip-zero");
+    else                   el.classList.remove("slip-zero");
+    var totalLabel = $("total-label");
+    txt(totalLabel, sm.total ? ("(" + sm.total + " total)") : "");
+  }
+
+  /* ====== notes ====== */
+  function updNotes(notes) {
+    var box = $("notes-box");
+    if (!notes || !notes.length) { box.hidden = true; return; }
+    box.hidden = false;
+    /* clear safely */
+    while (box.firstChild) box.removeChild(box.firstChild);
+    for (var i = 0; i < notes.length; i++) {
+      var p = mk("p");
+      txt(p, notes[i]);
+      box.appendChild(p);
+    }
+  }
+
+  /* ====== badge helpers ====== */
+  function mkBadge(label, cls) {
+    var b = mk("span", "badge " + cls);
+    txt(b, label);
+    return b;
+  }
+  function srcCls(s) {
+    switch (s) {
+      case "gemini": return "b-gemini";
+      case "seed":   return "b-seed";
+      case "judge":  return "b-judge";
+      default:       return "b-seed";
+    }
+  }
+  function outCls(o) {
+    switch (o) {
+      case "blocked": return "b-blocked";
+      case "refused": return "b-refused";
+      case "slipped": return "b-slipped";
+      case "error":   return "b-error";
+      default:        return "";
+    }
+  }
+  function cardCls(o) {
+    switch (o) {
+      case "blocked": return "card-blocked";
+      case "refused": return "card-refused";
+      case "slipped": return "card-slipped";
+      case "error":   return "card-error";
+      default:        return "";
+    }
+  }
+
+  /* ====== detail helpers ====== */
+  function detSec(label, text) {
+    var s = mk("div", "det-sec");
+    var l = mk("div", "det-lbl");
+    txt(l, label);
+    s.appendChild(l);
+    var t = mk("div", "det-txt");
+    txt(t, text);
+    s.appendChild(t);
+    return s;
+  }
+
+  /* ====== card creation ====== */
+  function mkCard(r) {
+    var card = mk("article", "card " + cardCls(r.outcome));
+    card.setAttribute("data-id", r.id);
+
+    /* --- header button --- */
+    var btn = mk("button", "card-btn");
+    btn.type = "button";
+    btn.setAttribute("aria-expanded", "false");
+    btn.setAttribute("aria-label",
+      "Attack: " + (r.technique || "Unknown") +
+      ". Outcome: " + (r.outcome || "unknown") +
+      ". Activate to show details.");
+
+    /* top row */
+    var top = mk("div", "card-top");
+    var tech = mk("span", "card-tech");
+    txt(tech, r.technique || "Unknown technique");
+    top.appendChild(tech);
+
+    var badges = mk("div", "card-badges");
+    badges.appendChild(mkBadge(r.source || "unknown", srcCls(r.source)));
+    badges.appendChild(mkBadge(r.outcome || "unknown", outCls(r.outcome)));
+    if (r.probed_guard) {
+      badges.appendChild(mkBadge("probed guard", "b-probed"));
+    }
+    top.appendChild(badges);
+    btn.appendChild(top);
+
+    /* goal */
+    if (r.goal) {
+      var goal = mk("div", "card-goal");
+      txt(goal, r.goal);
+      btn.appendChild(goal);
+    }
+
+    /* meta line */
+    var meta = mk("div", "card-meta");
+    if (r.parent) {
+      var ps = mk("span");
+      var parentObj = resultMap[r.parent];
+      txt(ps, "Evolved from: " + (parentObj ? parentObj.technique : r.parent));
+      meta.appendChild(ps);
+    }
+    if (r.seconds != null) {
+      var ts = mk("span");
+      txt(ts, Number(r.seconds).toFixed(1) + "s");
+      meta.appendChild(ts);
+    }
+    if (r.round != null) {
+      var rs = mk("span");
+      txt(rs, "Round " + r.round);
+      meta.appendChild(rs);
+    }
+    btn.appendChild(meta);
+    card.appendChild(btn);
+
+    /* --- body --- */
+    var bodyId = "cb-" + r.id;
+    var body = mk("div", "card-body");
+    body.id = bodyId;
+    btn.setAttribute("aria-controls", bodyId);
+
+    /* user_prompt */
+    if (r.user_prompt) body.appendChild(detSec("Developer Request", r.user_prompt));
+
+    /* files */
+    if (r.files) {
+      var keys = Object.keys(r.files);
+      if (keys.length) {
+        var fs = mk("div", "det-sec");
+        fs.appendChild(txt(mk("div", "det-lbl"), "Injected Files"));
+        for (var i = 0; i < keys.length; i++) {
+          var ent = mk("div", "file-ent");
+          ent.appendChild(txt(mk("div", "file-nm"), keys[i]));
+          var pre = mk("pre", "det-pre");
+          txt(pre, r.files[keys[i]]);
+          ent.appendChild(pre);
+          fs.appendChild(ent);
+        }
+        body.appendChild(fs);
+      }
+    }
+
+    /* indicators */
+    if (r.indicators && r.indicators.length) {
+      var indSec = mk("div", "det-sec");
+      indSec.appendChild(txt(mk("div", "det-lbl"), "Attack Indicators"));
+      var indBox = mk("div", "indicators");
+      for (var ii = 0; ii < r.indicators.length; ii++) {
+        indBox.appendChild(txt(mk("span", "indicator-tag"), r.indicators[ii]));
+      }
+      indSec.appendChild(indBox);
+      body.appendChild(indSec);
+    }
+
+    /* guard probes */
+    if (r.guard_probes && r.guard_probes.length) {
+      var gpSec = mk("div", "det-sec");
+      gpSec.appendChild(txt(mk("div", "det-lbl"), "Guard Probes"));
+      var gpList = mk("ul", "gp-list");
+      for (var gi = 0; gi < r.guard_probes.length; gi++) {
+        var gp = r.guard_probes[gi];
+        var gpItem = mk("li", "gp-item");
+        gpItem.appendChild(txt(mk("span", "gp-tool"), gp.tool || ""));
+        if (gp.decision) {
+          var gpDecLower = gp.decision.toLowerCase().replace(/[^a-z]/g, "");
+          gpItem.appendChild(txt(mk("span", "gp-dec gp-dec-" + gpDecLower), gp.decision));
+        }
+        /* extract path or command from args */
+        if (gp.args) {
+          var gpPath = gp.args.path || gp.args.command || gp.args.file || gp.args.target || "";
+          if (!gpPath && typeof gp.args === "object") {
+            var aKeys = Object.keys(gp.args);
+            if (aKeys.length) gpPath = gp.args[aKeys[0]];
+          }
+          if (gpPath) {
+            gpItem.appendChild(txt(mk("span", "gp-path"), String(gpPath)));
+          }
+        }
+        gpList.appendChild(gpItem);
+      }
+      gpSec.appendChild(gpList);
+      body.appendChild(gpSec);
+    }
+
+    /* evidence */
+    if (r.evidence) {
+      var esec = mk("div", "det-sec");
+      esec.appendChild(txt(mk("div", "det-lbl"), "Security Layer Evidence"));
+      var eviCls = "evi-box";
+      if (r.outcome === "refused") eviCls += " evi-refused";
+      else if (r.outcome === "slipped") eviCls += " evi-slipped";
+      else if (r.outcome === "error") eviCls += " evi-error";
+      var ebox = mk("div", eviCls);
+
+      var dec = mk("div", "evi-dec");
+      var decParts = [];
+      if (r.evidence.tool) decParts.push(r.evidence.tool);
+      if (r.evidence.decision) decParts.push(r.evidence.decision);
+      txt(dec, decParts.join(": "));
+      ebox.appendChild(dec);
+
+      if (r.evidence.reason) {
+        ebox.appendChild(txt(mk("div", "evi-reason"), r.evidence.reason));
+      }
+
+      esec.appendChild(ebox);
+      body.appendChild(esec);
+    }
+
+    /* agent reply */
+    if (r.agent_reply) body.appendChild(detSec("Agent Reply", r.agent_reply));
+
+    /* error */
+    if (r.error) body.appendChild(detSec("Error", r.error));
+
+    /* tool_calls timeline */
+    if (r.tool_calls && r.tool_calls.length) {
+      var tcsec = mk("div", "det-sec");
+      tcsec.appendChild(txt(mk("div", "det-lbl"), "Tool Call Timeline"));
+      var tl = mk("div", "timeline");
+      for (var t = 0; t < r.tool_calls.length; t++) {
+        var tc = r.tool_calls[t];
+        var decLower = (tc.decision || "").toLowerCase().replace(/[^a-z]/g, "");
+        var item = mk("div", "tl-item tl-" + decLower);
+
+        var line1 = mk("div");
+        line1.appendChild(txt(mk("span", "tc-name"), tc.tool || ""));
+        if (tc.decision) {
+          line1.appendChild(txt(mk("span", "tc-dec tc-dec-" + decLower), tc.decision));
+        }
+        item.appendChild(line1);
+
+        if (tc.reason) {
+          item.appendChild(txt(mk("div", "tc-reason"), tc.reason));
+        }
+        if (tc.args && Object.keys(tc.args).length) {
+          var argsEl = mk("pre", "tc-args");
+          txt(argsEl, JSON.stringify(tc.args, null, 2));
+          item.appendChild(argsEl);
+        }
+        tl.appendChild(item);
+      }
+      tcsec.appendChild(tl);
+      body.appendChild(tcsec);
+    }
+
+    card.appendChild(body);
+
+    /* click toggle */
+    btn.addEventListener("click", function () {
+      var isOpen = card.classList.contains("open");
+      if (isOpen) {
+        card.classList.remove("open");
+        btn.setAttribute("aria-expanded", "false");
+        delete expanded[r.id];
+      } else {
+        card.classList.add("open");
+        btn.setAttribute("aria-expanded", "true");
+        expanded[r.id] = true;
+      }
+    });
+
+    /* restore expand state */
+    if (expanded[r.id]) {
+      card.classList.add("open");
+      btn.setAttribute("aria-expanded", "true");
+    }
+
+    return card;
+  }
+
+  /* ====== round sections ====== */
+  function ensureRound(num) {
+    if (roundEls[num]) return roundEls[num];
+
+    var ct = $("rounds-ct");
+    var empty = $("empty-msg");
+    if (empty) empty.remove();
+
+    var sec = mk("div", "round-sec");
+    sec.setAttribute("data-round", num);
+
+    var hd = mk("h3", "round-heading");
+    hd.appendChild(mk("span", "round-dot"));
+    hd.appendChild(txt(mk("span"), num > 0 ? ("Round " + num) : "Seed Attacks"));
+    sec.appendChild(hd);
+
+    var grid = mk("div", "cards-grid");
+    sec.appendChild(grid);
+
+    /* insert in order */
+    var existing = ct.querySelectorAll(".round-sec");
+    var placed = false;
+    for (var i = 0; i < existing.length; i++) {
+      if (num < parseInt(existing[i].getAttribute("data-round"), 10)) {
+        ct.insertBefore(sec, existing[i]);
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) ct.appendChild(sec);
+
+    roundEls[num] = sec;
+    return sec;
+  }
+
+  function updRounds(results) {
+    if (!results || !results.length) return;
+
+    /* populate resultMap first (parent look-ups) */
+    for (var i = 0; i < results.length; i++) resultMap[results[i].id] = results[i];
+
+    for (var j = 0; j < results.length; j++) {
+      var r = results[j];
+      if (rendered[r.id]) continue;
+      var rnd = (r.round != null) ? r.round : 0;
+      var sec = ensureRound(rnd);
+      var grid = sec.querySelector(".cards-grid");
+      grid.appendChild(mkCard(r));
+      rendered[r.id] = true;
+    }
+  }
+
+  /* ====== judge ====== */
+  function updJudge(judgeArr, busy) {
+    var btn = $("j-btn");
+    if (busy) {
+      btn.disabled = true;
+      btn.textContent = "Attack running…";
+    } else {
+      btn.disabled = false;
+      btn.textContent = "Submit Attack";
+    }
+
+    if (!judgeArr || !judgeArr.length) return;
+
+    for (var i = 0; i < judgeArr.length; i++) resultMap[judgeArr[i].id] = judgeArr[i];
+
+    $("jr-hd").hidden = false;
+    var ct = $("jr-cards");
+
+    /* newest first */
+    for (var k = judgeArr.length - 1; k >= 0; k--) {
+      var r = judgeArr[k];
+      if (renderedJ[r.id]) continue;
+      ct.insertBefore(mkCard(r), ct.firstChild);
+      renderedJ[r.id] = true;
+    }
+  }
+
+  /* ====== judge form ====== */
+  function showMsg(text, cls) {
+    var el = $("j-msg");
+    el.hidden = false;
+    el.className = "judge-msg " + cls;
+    txt(el, text);
+    if (msgTimer) clearTimeout(msgTimer);
+    if (cls === "jm-success") {
+      msgTimer = setTimeout(function () { el.hidden = true; }, 8000);
+    }
+  }
+
+  function onSubmit(e) {
+    e.preventDefault();
+    var readme = $("j-readme").value.trim();
+    var prompt = $("j-prompt").value.trim();
+
+    if (!readme || !prompt) {
+      showMsg("Both fields are required.", "jm-error");
+      return;
+    }
+
+    var btn = $("j-btn");
+    btn.disabled = true;
+    btn.textContent = "Submitting…";
+    $("j-msg").hidden = true;
+
+    fetch("/api/judge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ readme: readme, prompt: prompt })
+    })
+    .then(function (res) {
+      if (res.status === 202) {
+        return res.json().then(function (d) {
+          showMsg("Attack submitted (ID: " + d.id + "). Running — results appear below.", "jm-success");
+          $("j-readme").value = "";
+          $("j-prompt").value = "";
+        });
+      } else if (res.status === 409) {
+        showMsg("Another judge attack is already running. Please wait.", "jm-error");
+      } else {
+        return res.json()
+          .catch(function () { return { detail: "Unknown error" }; })
+          .then(function (d) { showMsg(d.detail || ("Error: HTTP " + res.status), "jm-error"); });
+      }
+    })
+    .catch(function () {
+      showMsg("Network error. Check your connection.", "jm-error");
+    })
+    .then(function () {
+      /* re-enable only if not judge_busy */
+      if (!lastState || !lastState.judge_busy) {
+        btn.disabled = false;
+        btn.textContent = "Submit Attack";
+      }
+    });
+  }
+
+  /* ====== reconnect ====== */
+  function setOffline(v) {
+    if (v === isOffline) return;
+    isOffline = v;
+    $("reconnect").hidden = !v;
+  }
+
+  /* ====== polling ====== */
+  function poll() {
+    fetch("/api/state")
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        setOffline(false);
+        lastState = data;
+        updHeader(data);
+        updScoreboard(data.summary);
+        updNotes(data.notes);
+        updRounds(data.results);
+        updJudge(data.judge, data.judge_busy);
+      })
+      .catch(function () {
+        setOffline(true);
+      })
+      .then(function () {
+        setTimeout(poll, POLL_MS);
+      });
+  }
+
+  /* ====== init ====== */
+  function init() {
+    $("jform").addEventListener("submit", onSubmit);
+    poll();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+
+})();
+</script>
+
+</body>
+</html>

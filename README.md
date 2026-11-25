@@ -1,0 +1,102 @@
+# Agent Governance Gateway
+
+**Authorization and runtime governance for AI coding agents.** Every Claude Code tool call is intercepted, classified and recorded. Codex, Cursor and Windsurf are governed only through the gateway's MCP tools; their built-in shell and file tools are not intercepted. Risky actions go to a named human, who runs them outside the agent. Everything is signed and audited.
+
+> An AI agent having a *capability* is not the same as it having *authority*.
+
+## What it does
+
+- **Intercepts every tool call** (shell, file, web and MCP) via Claude Code hooks and an MCP server, and returns **allow / observe / escalate / deny** with an itemized, explainable risk score.
+- **Keeps the agent unprivileged:** approved commands run in a broker outside the agent. For third-party MCP calls the sandbox can't make itself, a human approves the exact call and the agent's identical retry is allowed once.
+- **Dual control:** critical actions (e.g. a command that sends `.env` out) need two approvals by different reviewers with different keys, each signed.
+- **Detects intent, not just keywords** (optional, local): a small distilled classifier plus [jev-os](https://github.com/Boredem125/jev-os) zero-shot checks scan what the agent *reads* for prompt injection, sentence by sentence. On a hit, even allowlisted shell and network actions need a human.
+- **Governance-as-code:** plain-language clauses ("no moving money without human review") mapped to EU AI Act / GDPR / SR 11-7 references, checked on shell commands and on MCP/WebFetch calls, with a `test` command that measures each clause before you trust it.
+- **Governance records:** versioned policies with second-reviewer change control and drift protection, a signed evidence pack for auditors, oversight metrics with approval-fatigue detection, and dev/staging/prod plus data-classification rules.
+- **Operations:** every tool call is audited, with secrets scrubbed from output and logs. Denials and critical actions raise alerts (local log plus an optional webhook). Per-class rate limits stop an agent that loops, and audit retention is tiered at 90 days, 1 year or 7 years.
+
+**Design rule:** models may only *raise* scrutiny. Deterministic rules stay in charge, so a fooled model means an extra approval, never an open door.
+
+## Results (measured, laptop CPU)
+
+Prompt injection in what the agent reads, held-out sets (caught, false alarms):
+
+| Set | Keyword rules (before) | jev-os checks | Shipped (jev-os OR student) |
+|---|---|---|---|
+| Injections in repo files (600) | 60/309, 39/291 | 86/309, 8/291 | **256/309, 14/291** |
+| deepset, genuine attacks | 0/39, 0/56 | 26/39, 1/56 | **31/39, 1/56** |
+| neuralchemy (942 texts) | 156/552, 3/390 | 324/552, 86/390 | **525/552, 96/390** |
+
+- Governance on MCP/WebFetch calls: 16/20 violations caught, 0/24 benign calls flagged (frozen test set).
+- Red team: 10 of 113 evasive attacks still get through, all plain-sounding instructions with no AI wording. That case is left to the authorization layer.
+- AIUC-1 (the AI agent standard, July 2026 release): 5 of 51 requirements supported, 16 partial, 30 not covered, self-assessed with the gap for each ([mapping](docs/AIUC-1_MAP.md)). Most of the 30 are organizational processes a runtime tool can't supply.
+- Every adoption decision used a rule written before the test run; two candidates that missed their rule were not shipped. Full numbers, method and limits: [the write-up](docs/INTENT_AWARE_AUTHORIZATION.md).
+
+## Security of the gateway itself
+
+CI runs Semgrep, Gitleaks, Trivy and a ZAP API scan on every push, with SARIF upload and a severity gate. Fixed along the way: an unauthenticated HTTP API that let anyone approve and run commands, an endpoint that would pull and run any Docker image, and every real 500 ZAP found. See [SECURITY.md](SECURITY.md).
+
+## Tech
+
+Python 3.12 · FastAPI · MCP · Claude Code hooks · ONNX Runtime · Pydantic · PyNaCl (Ed25519) · pytest (679 tests collected, 18 Oct 2026)
+
+## Quick start
+
+```bash
+pip install -e ".[dev]"
+sandbox init . --claude --mcp      # connect a folder
+sandbox watch .                    # approve escalations in another terminal
+```
+
+Useful commands: `sandbox verify` (audit chains), `sandbox explain <id>`, `sandbox alerts`, `sandbox oversight`, `sandbox retention`, `sandbox export-evidence --out pack.zip`, `sandbox policy history`.
+
+To send alerts to Slack, Teams or any collector, set `SANDBOX_ALERT_WEBHOOK` to its incoming-webhook URL.
+
+Guided walkthrough: `python demo/call_demo.py` runs 12 scenes through the real gateway, from normal work to a poisoned README, `.env` theft stopped by dual control, governance clauses on a Stripe call, a tampered log and an evidence pack. The agent is scripted to act as if it were fooled; everything else is the real gateway. Start `jevos serve` first for the governance scene. For a live session with the real Claude Code, `python demo/live_setup.py` builds the same project with hooks connected, and `python demo/try.py preset steal-env` (or any tool call you name) sends one call through the gateway while you approve or deny it in `sandbox watch`.
+
+Optional intent-aware layer: `pip install -e ".[semantic]"`, then `jevos serve` and `sandbox semantic enable .`
+
+## Docs
+
+[Write-up: intent-aware authorization](docs/INTENT_AWARE_AUTHORIZATION.md) · [Full details](docs/DETAILS.md) · [Threat model](docs/THREAT_MODEL.md) · [Governance-as-code](docs/GOVERNANCE.md) · [Evidence pack](docs/EVIDENCE.md) · [Data and environment](docs/DATA_AND_ENVIRONMENT.md) · [Compliance mapping](docs/COMPLIANCE_MAP.md) · [AIUC-1 mapping](docs/AIUC-1_MAP.md) · [Benchmarks](benchmarks/injection/README.md)
+
+*Compliance mappings show design intent, not certification. No software is "compliant" on its own; organisations are.*
+
+## Licence
+
+Licensed under the [MIT License](LICENSE).
+
+## Install with npx
+
+The quickest way to try haltwire on a fresh machine (requires git and Python 3.12+):
+
+```bash
+# Works now (no npm publish needed):
+npx github:Boredem125/haltwire init
+
+# After the package is published to npm:
+npx haltwire init
+```
+
+This installs nothing globally. Under the hood, `npx` runs a thin Node.js launcher that calls `uvx` (or `pipx`) to fetch the Python package from GitHub and run `haltwire init .` in the current directory. If `uvx` is not installed, the launcher prints the one-line install command for your OS.
+
+Pass `--install-uv` to let the launcher install uv for you (asks for confirmation first, or pass `--yes` to skip the prompt).
+
+Set `HALTWIRE_REF` to override the git ref (branch, tag or commit SHA) that is fetched.
+
+## Arena demo
+
+The arena is an interactive red-team demo that shows the gateway stopping real attacks. To run it locally:
+
+```bash
+pip install -e ".[arena]"
+cp deploy/.env.example deploy/.env   # edit with your keys (GEMINI_API_KEY, etc.)
+python -m arena.server               # starts on http://localhost:8133
+```
+
+Environment variables are documented in `deploy/.env.example`. The key ones: `GEMINI_API_KEY` (Gemini intent judge), `GOOGLE_CHAT_WEBHOOK` (alerts to Google Chat), `ARENA_RUNS` (session storage directory, defaults to system temp).
+
+## Source
+
+```
+https://github.com/Boredem125/haltwire
+```

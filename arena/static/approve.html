@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tripwire · Team approval</title>
+<style>
+  :root { --bg:#faf5ec; --card:#fffdf8; --line:#e8dcc8; --ink:#3a2c21; --mute:#6b5848;
+          --ok:#1f7a3d; --okbg:#e4f0df; --bad:#b3261e; --badbg:#f9e3dd; --acc:#8a5f3c; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg);
+         color: var(--ink); padding: 18px; line-height: 1.45; }
+  h1 { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; font-size: 1.6rem; margin-bottom: 4px; }
+  .sub { color: var(--mute); font-size: .9rem; margin-bottom: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px;
+          margin-bottom: 14px; box-shadow: 0 2px 14px rgba(110,80,50,.08); }
+  .alert { border: 2px solid var(--ok); background: var(--okbg); }
+  .alert b { color: var(--ok); }
+  .mono { font-family: "SF Mono", Consolas, monospace; font-size: .85rem; word-break: break-word; }
+  input { width: 100%; font-size: 1.1rem; padding: 12px; border: 1px solid var(--line); border-radius: 10px;
+          background: #fff; margin: 8px 0 10px; }
+  button { width: 100%; font-size: 1.1rem; font-weight: 800; padding: 16px; border: 0; border-radius: 14px;
+           margin-top: 10px; cursor: pointer; }
+  .b-join { background: var(--acc); color: #fff; }
+  .b-keep { background: var(--ok); color: #fff; }
+  .b-rel { background: var(--card); color: var(--bad); border: 2px solid var(--bad); }
+  button:disabled { opacity: .45; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .chip { background: #f4ecdf; border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; font-size: .85rem; font-weight: 700; }
+  .chip.vote { background: var(--badbg); border-color: #e3a597; color: #8f1f13; }
+  .done { text-align: center; font-weight: 800; font-size: 1.2rem; }
+  .done.deny { color: var(--ok); } .done.approve { color: var(--bad); }
+  .err { color: var(--bad); font-weight: 700; min-height: 1.2em; margin-top: 6px; }
+  .hidden { display: none; }
+  .lbl { font-size: .72rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--mute); }
+</style>
+</head>
+<body>
+  <h1>Tripwire team approval</h1>
+  <div class="sub">An AI agent was frozen. Your team decides. Anyone can keep it frozen; release needs two of you.</div>
+
+  <div class="card" id="join-card">
+    <div class="lbl">Your name</div>
+    <input id="name" maxlength="16" autocomplete="name" placeholder="e.g. Alex" aria-label="Your name">
+    <button class="b-join" id="join">Join the team</button>
+    <div class="err" id="join-err" role="alert"></div>
+  </div>
+
+  <div class="card alert hidden" id="alert-card">
+    <div class="lbl">What happened</div>
+    <div style="margin-top:6px"><b>Agent frozen:</b> <span id="trip"></span></div>
+    <div class="mono" style="margin-top:6px" id="evidence"></div>
+    <div class="lbl" style="margin-top:10px">Its task was</div>
+    <div class="mono" id="task"></div>
+  </div>
+
+  <div class="card hidden" id="vote-card">
+    <div class="lbl">Signed in as <span id="me"></span></div>
+    <button class="b-keep" id="keep">Keep it frozen</button>
+    <button class="b-rel" id="release">Approve release (needs 2)</button>
+    <div class="err" id="vote-err" role="alert"></div>
+  </div>
+
+  <div class="card hidden" id="team-card">
+    <div class="lbl">Team</div>
+    <div class="chips" id="people"></div>
+    <div class="lbl" style="margin-top:10px">Release approvals</div>
+    <div class="chips" id="votes"></div>
+  </div>
+
+  <div class="card hidden" id="done-card" role="status">
+    <div class="done" id="done"></div>
+    <div class="sub" style="text-align:center;margin:6px 0 0" id="done-sub"></div>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+  var code = location.pathname.split("/").pop();
+  var key = "tw-approver-" + code;
+  var secret = sessionStorage.getItem(key + "-secret");
+  var me = sessionStorage.getItem(key + "-name");
+  function $(id) { return document.getElementById(id); }
+  function tx(el, t) { el.textContent = t; return el; }
+  function show(el) { el.classList.remove("hidden"); }
+  function hide(el) { el.classList.add("hidden"); }
+  function chip(text, cls) { var s = document.createElement("span"); s.className = "chip " + (cls || ""); s.textContent = text; return s; }
+
+  function render(st) {
+    show($("alert-card"));
+    tx($("trip"), (st.trip.kind || "trip") + (st.trip.canary_name ? " on " + st.trip.canary_name : ""));
+    tx($("evidence"), st.trip.evidence || "");
+    tx($("task"), st.task || "");
+    show($("team-card"));
+    var pp = $("people"); while (pp.firstChild) pp.removeChild(pp.firstChild);
+    st.people.forEach(function (n) { pp.appendChild(chip(n)); });
+    var vv = $("votes"); while (vv.firstChild) vv.removeChild(vv.firstChild);
+    if (!st.release_votes.length) vv.appendChild(chip("none yet"));
+    st.release_votes.forEach(function (n) { vv.appendChild(chip(n, "vote")); });
+    if (st.decided) {
+      hide($("vote-card")); hide($("join-card")); show($("done-card"));
+      var d = $("done");
+      d.className = "done " + st.decision;
+      tx(d, st.decision === "deny" ? "Kept frozen" : "Released");
+      tx($("done-sub"), "Signed with Ed25519 as " + (st.reviewer || "") + ".");
+    } else if (secret) {
+      hide($("join-card")); show($("vote-card"));
+      tx($("me"), me || "");
+      $("release").disabled = st.release_votes.indexOf(me) >= 0;
+      tx($("release"), st.release_votes.indexOf(me) >= 0 ? "You approved release, waiting for a second person"
+        : "Approve release (" + (2 - st.release_votes.length) + " more needed)");
+    }
+  }
+
+  function poll() {
+    fetch("/api/approvers/" + encodeURIComponent(code)).then(function (r) {
+      if (!r.ok) throw new Error("gone");
+      return r.json();
+    }).then(render).catch(function () {
+      tx($("join-err"), "This approval link has expired or the run is over.");
+    });
+  }
+
+  $("join").addEventListener("click", function () {
+    var n = $("name").value.trim();
+    fetch("/api/approvers/" + encodeURIComponent(code) + "/join", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: n })
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (x) {
+        if (!x.ok) { tx($("join-err"), typeof x.d.detail === "string" ? x.d.detail : "Use 1-16 letters."); return; }
+        secret = x.d.secret; me = x.d.name;
+        sessionStorage.setItem(key + "-secret", secret); sessionStorage.setItem(key + "-name", me);
+        render(x.d);
+      });
+  });
+
+  function vote(v) {
+    tx($("vote-err"), "");
+    fetch("/api/approvers/" + encodeURIComponent(code) + "/vote", {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Approver-Secret": secret || "" },
+      body: JSON.stringify({ vote: v })
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (x) {
+        if (!x.ok) { tx($("vote-err"), typeof x.d.detail === "string" ? x.d.detail : "Could not record it."); poll(); return; }
+        render(x.d);
+      });
+  }
+  $("keep").addEventListener("click", function () { vote("keep_frozen"); });
+  $("release").addEventListener("click", function () { vote("release"); });
+
+  poll();
+  setInterval(poll, 1500);
+})();
+</script>
+</body>
+</html>

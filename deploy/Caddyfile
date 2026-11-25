@@ -1,0 +1,53 @@
+# Tripwire reverse proxy
+#
+# For local testing (no TLS):
+#   Set ARENA_DOMAIN=:80 in .env or leave unset (default is :80).
+#
+# For GCP with automatic HTTPS via Let's Encrypt + sslip.io:
+#   Set ARENA_DOMAIN to <ip-with-dashes>.sslip.io
+#   Caddy obtains a TLS certificate automatically.
+
+{$ARENA_DOMAIN::80} {
+	# --- WebSocket: voice call bridge ---
+	@websocket {
+		path /ws/call/*
+		header Connection *Upgrade*
+		header Upgrade    websocket
+	}
+	reverse_proxy @websocket 172.30.0.10:8088
+
+	# --- API request body size limit ---
+	@api {
+		path /api/*
+	}
+	request_body @api {
+		max_size 64KB
+	}
+
+	# --- API and static content ---
+	reverse_proxy 172.30.0.10:8088
+
+	# --- Security headers ---
+	header {
+		X-Content-Type-Options    "nosniff"
+		X-Frame-Options           "DENY"
+		Referrer-Policy           "strict-origin-when-cross-origin"
+		Permissions-Policy        "microphone=(self)"
+		# HSTS: 1 year, include subdomains
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		# CSP: self-contained page with inline script/style + ws/wss to self + mic
+		Content-Security-Policy   "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; media-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
+		-Server
+	}
+
+	# L3: strip query strings from logs (tokens may be in WS query)
+	log {
+		output stdout
+		format filter {
+			wrap console
+			fields {
+				request>uri replace "?.*" "?[STRIPPED]"
+			}
+		}
+	}
+}

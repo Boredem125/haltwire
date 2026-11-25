@@ -1,0 +1,21 @@
+# Reviewed false positives (commit:file:rule:line). Keep each with a reason.
+
+# The public jwt.io example token ({"sub": "1234567890"}), a fixture for the
+# secret scanner's own JWT test. Not a credential.
+f303cc5651900177fc210661e11365db39bf976c:tests/security/test_secret_scanning.py:jwt:45
+
+# M2 T12 scrub fixtures: fake secret-shaped strings that the tests assert
+# scrub.py removes before an escalation upload. Not credentials.
+9392ab7bfdcd0e405fd8d472918e4bc34d4c60d3:ee/tests/test_m2_t12_remote.py:generic-api-key:993
+9392ab7bfdcd0e405fd8d472918e4bc34d4c60d3:tests/security/test_m2_t12_remote.py:stripe-access-token:1875
+9392ab7bfdcd0e405fd8d472918e4bc34d4c60d3:tests/security/test_m2_t12_remote.py:stripe-access-token:1907
+
+# M2 T13 tests: `dev_token, "req-..."` call arguments. The token is
+# secrets.token_hex() at runtime; the matched string is a request id.
+c7526b991fa9fb823560e1a77ad998813855371f:ee/tests/test_m2_t13_web.py:generic-api-key:1002
+c7526b991fa9fb823560e1a77ad998813855371f:ee/tests/test_m2_t13_web.py:generic-api-key:1397
+
+# T12c c1 (d2e758e) added a fake OpenAI-style key as the preview secret-scrubbing
+# fixture (extra test 10). The line carries gitleaks:allow since c2; this entry
+# covers the c1 commit in history. Not a credential.
+b99c0e6bdd4e506583cd1e6d1314d3ce39be95f7:tests/security/test_m2_script_binding.py:generic-api-key:1647

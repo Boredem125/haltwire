@@ -1,0 +1,22 @@
+{
+  "name": "haltwire",
+  "version": "0.1.0",
+  "description": "npx launcher for the haltwire sandbox CLI",
+  "bin": {
+    "haltwire": "bin/haltwire.js"
+  },
+  "files": [
+    "bin/"
+  ],
+  "scripts": {
+    "test": "node --test npm/test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Boredem125/haltwire.git"
+  },
+  "license": "MIT"
+}

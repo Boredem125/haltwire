@@ -1,0 +1,23 @@
+# Keep the build context small.  The Dockerfile COPYs only:
+#   pyproject.toml, src/
+.git
+.venv
+node_modules
+**/__pycache__
+tests/
+docs/
+benchmarks
+demo
+examples
+*.pyc
+*.pyo
+.mypy_cache
+.pytest_cache
+.ruff_cache
+# Never bake secrets or local run data into an image.
+**/.env
+**/.env.*
+!**/.env.example
+arena/runs/
+public_docs/
+BUILDATHON_*.md
