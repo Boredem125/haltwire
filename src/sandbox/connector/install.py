@@ -688,6 +688,23 @@ def _merge_settings(layout: FolderLayout, stub_path: Path, python: str | None = 
     return target
 
 
+def _is_json_empty(data: dict) -> bool:
+    """True if the JSON object has no meaningful content left."""
+    if not data:
+        return True
+    # Check if all values are empty lists/dicts
+    for v in data.values():
+        if isinstance(v, dict):
+            if not _is_json_empty(v):
+                return False
+        elif isinstance(v, list):
+            if v:
+                return False
+        else:
+            return False  # has a non-empty scalar value
+    return True
+
+
 def uninstall(root: str | Path, *, keep_data: bool = False) -> dict[str, Any]:
     """Remove the connector's settings entry (and optionally its data)."""
     layout = FolderLayout(root)
@@ -709,9 +726,42 @@ def uninstall(root: str | Path, *, keep_data: bool = False) -> dict[str, Any]:
             if len(kept) != len(entries):
                 hooks[event] = kept
                 changed = True
+        # Remove empty hook event lists
+        for event in list(hooks):
+            if not hooks[event]:
+                del hooks[event]
+        if not hooks:
+            existing.pop("hooks", None)
         if changed:
-            target.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+            if _is_json_empty(existing):
+                # Nothing left in the settings file: remove it
+                target.unlink(missing_ok=True)
+                # Remove .claude/ dir if empty
+                if target.parent.name == ".claude":
+                    try:
+                        target.parent.rmdir()
+                    except OSError:
+                        pass
+            else:
+                target.write_text(json.dumps(existing, indent=2), encoding="utf-8")
             removed_entry = True
+
+    # Remove our MCP server entry from .mcp.json
+    mcp_json = layout.root / ".mcp.json"
+    if mcp_json.is_file():
+        try:
+            mcp_data = json.loads(mcp_json.read_text(encoding="utf-8"))
+            servers = mcp_data.get("mcpServers", {})
+            if "sandbox" in servers:
+                del servers["sandbox"]
+                if not servers:
+                    mcp_data.pop("mcpServers", None)
+                if _is_json_empty(mcp_data):
+                    mcp_json.unlink(missing_ok=True)
+                else:
+                    mcp_json.write_text(json.dumps(mcp_data, indent=2), encoding="utf-8")
+        except (OSError, json.JSONDecodeError):
+            pass
 
     data_removed = False
     if not keep_data and layout.base.exists():

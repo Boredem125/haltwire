@@ -78,6 +78,22 @@ def _mask_canaries(text: str, canaries: Mapping[str, Any] | None) -> str:
     return _B64_TOKEN.sub(_blob, text)
 
 
+def _scrub_secrets(text: str) -> str:
+    """Strip real secrets (Bearer tokens, AWS keys, private keys, URL
+    credentials, KEY=VALUE assignments) so they never reach the model.
+
+    Uses the repo's existing connector/scrub.py which covers AKIA, sk-ant-,
+    ghp_, postgres://u:pass@, etc.  Applied AFTER canary masking.
+    """
+    if not text:
+        return text
+    try:
+        from sandbox.connector.scrub import scrub_text
+        return scrub_text(text)
+    except Exception:  # noqa: BLE001 — fail toward sending less, never more
+        return text
+
+
 # ---------------------------------------------------------------------------
 # Cheap stats for egress
 # ---------------------------------------------------------------------------
@@ -340,12 +356,15 @@ def judge_tool_call(
 
         args_text = json.dumps(args, default=str)[:_BODY_TRUNCATE]
         args_text = _mask_canaries(args_text, canaries)
+        args_text = _scrub_secrets(args_text)
         task_text = _mask_canaries(task[:500], canaries)
+        task_text = _scrub_secrets(task_text)
 
         recent_text = ""
         if recent_actions:
             recent_text = json.dumps(recent_actions[-5:], default=str)[:500]
             recent_text = _mask_canaries(recent_text, canaries)
+            recent_text = _scrub_secrets(recent_text)
 
         prompt = (
             f"TASK (what the user asked the agent to do):\n"
@@ -435,9 +454,12 @@ Respond with JSON: {"flag": true/false, "reason": "...", "confidence": 0.0-1.0}
         gclient = _make_client(client)
 
         body_text = _mask_canaries((body_preview or "")[:_BODY_TRUNCATE], canaries)
+        body_text = _scrub_secrets(body_text)
         task_text = _mask_canaries(task[:500], canaries)
+        task_text = _scrub_secrets(task_text)
         meta_text = json.dumps(request_meta, default=str)[:500]
         meta_text = _mask_canaries(meta_text, canaries)
+        meta_text = _scrub_secrets(meta_text)
         stats_text = json.dumps(stats, default=str)[:300]
 
         prompt = (

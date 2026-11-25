@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // haltwire -- npx launcher for the haltwire CLI.
-// CommonJS, zero dependencies. Derives name and repo from package.json.
+// CommonJS, zero dependencies.  Uses `uv tool install` (persistent) instead
+// of `uvx --from` (ephemeral cache) so hook commands survive cache clean/prune.
 "use strict";
 
 const { spawnSync } = require("node:child_process");
@@ -8,77 +9,191 @@ const path = require("node:path");
 const fs = require("node:fs");
 
 // ---------------------------------------------------------------------------
-// Single constant for the repo URL -- everything else derives from package.json
+// Constants
 // ---------------------------------------------------------------------------
 const REPO_URL = "https://github.com/Boredem125/haltwire";
-
-// Read version from package.json (one directory up from bin/)
 const pkg = JSON.parse(
   fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")
 );
 const VERSION = pkg.version;
-
-// ---------------------------------------------------------------------------
-// Resolver: find uvx or pipx on PATH
-// ---------------------------------------------------------------------------
-
 const IS_WIN = process.platform === "win32";
 
-// On Windows, only accept real executables (.exe, .com).  Refusing .cmd/.bat
-// avoids the need for cmd.exe /c which exposes metacharacter injection
-// (& | > < ^ %) -- user arguments would be interpreted as shell operators.
+// On Windows only accept real .exe/.com -- refuse .cmd/.bat (metacharacter
+// injection through cmd.exe /c).
 const _SAFE_EXTS = IS_WIN ? [".exe", ".com"] : [""];
 
+// ---------------------------------------------------------------------------
+// PATH search helpers
+// ---------------------------------------------------------------------------
+
+/** Find an executable *name* on PATH (or a single *override* dir). */
+function _findOnPath(name, override) {
+  var dirs = override
+    ? [override]
+    : (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  for (var i = 0; i < dirs.length; i++) {
+    for (var j = 0; j < _SAFE_EXTS.length; j++) {
+      var p = path.join(dirs[i], name + _SAFE_EXTS[j]);
+      try { fs.accessSync(p, fs.constants.F_OK); return p; } catch (_) {}
+    }
+  }
+  return null;
+}
+
 /**
- * Resolve uvx or pipx on PATH. Exported for unit testing.
- *
- * @param {string} [pathOverride] - if provided, search only this single
- *   directory (used by tests); otherwise search the full PATH.
- * @returns {{ runner: "uvx"|"pipx", path: string } | null}
+ * Resolve the package manager: uv or pipx.
+ * Returns { manager: "uv"|"pipx", path: string } or null.
+ * Exported for unit testing.
  */
 function _resolveRunner(pathOverride) {
-  const dirs = pathOverride
-    ? [pathOverride]
-    : (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  for (var k = 0; k < 2; k++) {
+    var name = k === 0 ? "uv" : "pipx";
+    var found = _findOnPath(name, pathOverride);
+    if (found) return { manager: name, path: found };
+  }
 
-  for (const name of ["uvx", "pipx"]) {
-    for (const dir of dirs) {
-      for (const ext of _SAFE_EXTS) {
-        const candidate = path.join(dir, name + ext);
-        try {
-          fs.accessSync(candidate, fs.constants.F_OK);
-          return { runner: name, path: candidate };
-        } catch (_) {
-          // not found, try next
+  // Windows: check for .cmd/.bat fallback for a helpful error message.
+  if (IS_WIN && !pathOverride) {
+    var dirs = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+    for (var n = 0; n < 2; n++) {
+      var nm = n === 0 ? "uv" : "pipx";
+      for (var d = 0; d < dirs.length; d++) {
+        for (var ext of [".cmd", ".bat"]) {
+          var c = path.join(dirs[d], nm + ext);
+          try { fs.accessSync(c, fs.constants.F_OK); _resolveRunner._cmdFallback = c; return null; } catch (_) {}
         }
       }
     }
   }
-
-  // On Windows, check whether a .cmd/.bat wrapper exists so we can give a
-  // specific diagnostic instead of a generic "not found".
-  if (IS_WIN) {
-    for (const name of ["uvx", "pipx"]) {
-      for (const dir of dirs) {
-        for (const ext of [".cmd", ".bat"]) {
-          var candidate = path.join(dir, name + ext);
-          try {
-            fs.accessSync(candidate, fs.constants.F_OK);
-            _resolveRunner._cmdFallback = candidate;
-            return null;
-          } catch (_) {}
-        }
-      }
-    }
-  }
-
   _resolveRunner._cmdFallback = null;
   return null;
 }
 _resolveRunner._cmdFallback = null;
 
 // ---------------------------------------------------------------------------
-// Install helper
+// Persistent install via uv tool / pipx
+// ---------------------------------------------------------------------------
+
+/**
+ * Ensure haltwire is persistently installed at the right ref/version.
+ * Returns the absolute path to the installed haltwire binary.
+ *
+ * @param {{ manager: string, path: string }} mgr - resolved manager
+ * @param {string} gitSpec - e.g. "git+https://...@v0.1.0"
+ * @param {string} ref     - the ref/version string
+ * @returns {string} absolute path to installed haltwire binary
+ */
+function _ensureInstalled(mgr, gitSpec, ref) {
+  if (mgr.manager === "uv") {
+    return _ensureUv(mgr.path, gitSpec, ref);
+  }
+  return _ensurePipx(mgr.path, gitSpec, ref);
+}
+
+function _ensureUv(uvPath, gitSpec, ref) {
+  // Check if already installed with the right version.
+  var list = spawnSync(uvPath, ["tool", "list"], {
+    encoding: "utf8", timeout: 15000, stdio: ["pipe", "pipe", "pipe"]
+  });
+  var listOut = (list.stdout || "") + (list.stderr || "");
+  // `uv tool list` output: "haltwire v0.1.0\n  - haltwire\n  - sandbox\n"
+  if (list.status === 0 && _uvToolListHasVersion(listOut, ref)) {
+    // Already installed at the right version -- skip reinstall.
+  } else {
+    var inst = spawnSync(uvPath, ["tool", "install", "--force", gitSpec], {
+      stdio: "inherit", timeout: 120000
+    });
+    if (inst.status !== 0) {
+      process.stderr.write("uv tool install failed (exit " + (inst.status || "null") + ")\n");
+      process.exit(inst.status || 1);
+    }
+  }
+
+  // Get the tool bin dir.
+  var binDir = spawnSync(uvPath, ["tool", "dir", "--bin"], {
+    encoding: "utf8", timeout: 10000, stdio: ["pipe", "pipe", "pipe"]
+  });
+  var toolBin = (binDir.stdout || "").trim();
+  if (!toolBin || binDir.status !== 0) {
+    process.stderr.write("Could not determine uv tool bin dir\n");
+    process.exit(1);
+  }
+
+  var hwBin = path.join(toolBin, IS_WIN ? "haltwire.exe" : "haltwire");
+  if (!_fileExists(hwBin)) {
+    process.stderr.write("haltwire not found at " + hwBin + " after install\n");
+    process.exit(1);
+  }
+
+  _hintPathIfNeeded(toolBin);
+  return hwBin;
+}
+
+/** Check whether `uv tool list` output shows haltwire at the given ref. */
+function _uvToolListHasVersion(output, ref) {
+  // Match "haltwire v0.1.0" or "haltwire 0.1.0" (uv prints with/without v).
+  var ver = ref.replace(/^v/, "");
+  var re = new RegExp("haltwire\\s+v?" + _escapeRegex(ver) + "\\b");
+  return re.test(output);
+}
+
+function _ensurePipx(pipxPath, gitSpec, ref) {
+  // pipx install --force git+...@ref
+  var inst = spawnSync(pipxPath, ["install", "--force", gitSpec], {
+    stdio: "inherit", timeout: 120000
+  });
+  if (inst.status !== 0) {
+    process.stderr.write("pipx install failed (exit " + (inst.status || "null") + ")\n");
+    process.exit(inst.status || 1);
+  }
+
+  // Get the bin dir.
+  var env = spawnSync(pipxPath, ["environment", "--value", "PIPX_BIN_DIR"], {
+    encoding: "utf8", timeout: 10000, stdio: ["pipe", "pipe", "pipe"]
+  });
+  var binDir = (env.stdout || "").trim();
+  if (!binDir || env.status !== 0) {
+    process.stderr.write("Could not determine pipx bin dir\n");
+    process.exit(1);
+  }
+
+  var hwBin = path.join(binDir, IS_WIN ? "haltwire.exe" : "haltwire");
+  if (!_fileExists(hwBin)) {
+    process.stderr.write("haltwire not found at " + hwBin + " after install\n");
+    process.exit(1);
+  }
+
+  _hintPathIfNeeded(binDir);
+  return hwBin;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function _fileExists(p) {
+  try { fs.accessSync(p, fs.constants.F_OK); return true; } catch (_) { return false; }
+}
+
+function _escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** If the tool bin dir is not on PATH, print one clear line. */
+function _hintPathIfNeeded(binDir) {
+  var dirs = (process.env.PATH || "").split(path.delimiter);
+  var normalBin = path.resolve(binDir);
+  for (var i = 0; i < dirs.length; i++) {
+    try { if (path.resolve(dirs[i]) === normalBin) return; } catch (_) {}
+  }
+  process.stderr.write(
+    "Note: " + binDir + " is not on your PATH.\n" +
+    "  Run `uv tool update-shell` or add it manually so `haltwire watch` works in new terminals.\n"
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Install helper (--install-uv)
 // ---------------------------------------------------------------------------
 
 function _installCommand() {
@@ -89,8 +204,8 @@ function _installCommand() {
 }
 
 function handleInstallUv(args) {
-  const hasYes = args.includes("--yes");
-  const isTTY = process.stdin.isTTY && process.stdout.isTTY;
+  var hasYes = args.includes("--yes");
+  var isTTY = process.stdin.isTTY && process.stdout.isTTY;
 
   if (!isTTY && !hasYes) {
     process.stderr.write(
@@ -100,7 +215,7 @@ function handleInstallUv(args) {
     process.exit(1);
   }
 
-  const cmd = _installCommand();
+  var cmd = _installCommand();
   process.stdout.write("This will run:\n  " + cmd + "\n");
 
   if (hasYes) {
@@ -108,10 +223,8 @@ function handleInstallUv(args) {
     return;
   }
 
-  // Interactive confirmation
-  const rl = require("node:readline").createInterface({
-    input: process.stdin,
-    output: process.stdout,
+  var rl = require("node:readline").createInterface({
+    input: process.stdin, output: process.stdout,
   });
   rl.question("Continue? [y/N] ", function (answer) {
     rl.close();
@@ -126,17 +239,13 @@ function handleInstallUv(args) {
 function _runInstaller() {
   var result;
   if (IS_WIN) {
-    result = spawnSync(
-      "powershell",
+    result = spawnSync("powershell",
       ["-ExecutionPolicy", "ByPass", "-c", "irm https://astral.sh/uv/install.ps1 | iex"],
-      { stdio: "inherit", shell: false }
-    );
+      { stdio: "inherit", shell: false });
   } else {
-    result = spawnSync(
-      "sh",
+    result = spawnSync("sh",
       ["-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"],
-      { stdio: "inherit", shell: false }
-    );
+      { stdio: "inherit", shell: false });
   }
   process.exit(result.status != null ? result.status : 1);
 }
@@ -154,36 +263,34 @@ function validateRef(ref) {
 // ---------------------------------------------------------------------------
 
 function main() {
-  const args = process.argv.slice(2);
+  var args = process.argv.slice(2);
 
-  // Handle --install-uv early
+  // Handle --install-uv early.
   if (args.includes("--install-uv")) {
     handleInstallUv(args);
     return;
   }
 
-  // Resolve runner
-  const found = _resolveRunner();
-  if (!found) {
+  // Resolve package manager.
+  var mgr = _resolveRunner();
+  if (!mgr) {
     var cmd = _installCommand();
     if (_resolveRunner._cmdFallback) {
-      // A .cmd/.bat wrapper exists but we refuse it (metacharacter injection
-      // risk when arguments are relayed through cmd.exe /c).
       process.stderr.write(
-        "Found " + _resolveRunner._cmdFallback + " but haltwire needs uvx.exe " +
+        "Found " + _resolveRunner._cmdFallback + " but haltwire needs uv.exe " +
         "(not a .cmd wrapper) for safe argument passing.\n" +
         "Install uv:\n  " + cmd + "\n"
       );
     } else {
       process.stderr.write(
-        "Neither uvx nor pipx found on PATH.\nInstall uv:\n  " + cmd + "\n"
+        "Neither uv nor pipx found on PATH.\nInstall uv:\n  " + cmd + "\n"
       );
     }
     process.exit(1);
   }
 
-  // Determine git ref
-  const envRef = process.env.HALTWIRE_REF;
+  // Determine git ref.
+  var envRef = process.env.HALTWIRE_REF;
   var ref;
   if (envRef) {
     if (!validateRef(envRef)) {
@@ -197,9 +304,12 @@ function main() {
     ref = "v" + VERSION;
   }
 
-  const gitSpec = "git+" + REPO_URL + "@" + ref;
+  var gitSpec = "git+" + REPO_URL + "@" + ref;
 
-  // Build the haltwire args
+  // Ensure persistent install, get the installed binary path.
+  var hwBin = _ensureInstalled(mgr, gitSpec, ref);
+
+  // Build haltwire args.
   var hwArgs;
   if (args.length === 0) {
     hwArgs = ["--help"];
@@ -209,34 +319,19 @@ function main() {
     hwArgs = args;
   }
 
-  // Build the spawn command
-  var allArgs;
-  if (found.runner === "uvx") {
-    allArgs = [found.path, "--from", gitSpec, "haltwire"].concat(hwArgs);
-  } else {
-    // pipx run --spec <spec> haltwire <args>
-    allArgs = [found.path, "run", "--spec", gitSpec, "haltwire"].concat(hwArgs);
-  }
+  // Run the installed binary.
+  var result = spawnSync(hwBin, hwArgs, { stdio: "inherit", shell: false });
 
-  // Spawn the resolved executable directly -- no cmd.exe /c needed because
-  // the resolver only accepts real .exe/.com (not .cmd/.bat).
-  var result = spawnSync(allArgs[0], allArgs.slice(1), {
-    stdio: "inherit",
-    shell: false,
-  });
-
-  // Propagate signals
   if (result.signal) {
     process.kill(process.pid, result.signal);
   }
-
   process.exit(result.status != null ? result.status : 1);
 }
 
-// Guard: only run main when this file is the entry point
+// Guard: only run main when this file is the entry point.
 if (require.main === module) {
   main();
 }
 
-// Export for unit testing
-module.exports = { _resolveRunner };
+// Export for unit testing.
+module.exports = { _resolveRunner, _ensureInstalled, _uvToolListHasVersion };

@@ -1,9 +1,34 @@
 from __future__ import annotations
 
 import os
+import sys
 
 import click
 import uvicorn
+
+
+def _fix_stdio_encoding() -> None:
+    """Reconfigure stdout/stderr so non-ASCII chars (checkmarks etc.) never crash.
+
+    On Windows consoles with cp1252 or similar codepages, characters like
+    the checkmark (U+2713) raise UnicodeEncodeError. We switch to utf-8 when
+    not a tty, or keep the encoding but add errors="replace" so the worst
+    case is a ? instead of a traceback.
+    """
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name)
+        if stream is None or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            if not stream.isatty():
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            else:
+                stream.reconfigure(errors="replace")
+        except (AttributeError, OSError):
+            pass
+
+
+_fix_stdio_encoding()
 
 
 @click.group()

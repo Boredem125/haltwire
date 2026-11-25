@@ -164,29 +164,33 @@ If the sandbox detects a tripwire violation (the agent accessed a planted canary
 file or leaked a canary value), it quarantines the workspace. Every tool call
 except reads is denied until a human unfreezes it.
 
+> The CLI is installed as both `haltwire` and `sandbox`. All examples below
+> work with either name.
+
 **Check the status:**
 
 ```bash
-sandbox status .
+haltwire status .
 ```
 
-If you see `FROZEN: yes (tripwire_stop)`, the workspace is quarantined.
+If you see `FROZEN: yes (tripwire)`, the workspace is quarantined.
 
 **To unfreeze:**
 
 1. First, make sure you have a pinned reviewer key. If you set up with
-   `sandbox init`, your key was auto-created but you need to pin it:
+   `haltwire init`, your key was auto-created but you need to pin it:
 
    ```bash
-   sandbox keys pin <your-reviewer-id>
+   haltwire keys pin <your-reviewer-id>
    ```
 
-   (Replace `<your-reviewer-id>` with your name or a short identifier.)
+   (Replace `<your-reviewer-id>` with your name or a short identifier,
+   for example `haltwire keys pin alice`.)
 
 2. Then unfreeze:
 
    ```bash
-   sandbox unfreeze --reviewer <your-reviewer-id>
+   haltwire unfreeze . --reviewer <your-reviewer-id>
    ```
 
    This writes a signed audit record proving who unfroze the workspace, then
@@ -199,13 +203,13 @@ If you see `FROZEN: yes (tripwire_stop)`, the workspace is quarantined.
    Clear the taint:
 
    ```bash
-   haltwire unfreeze --reviewer <your-reviewer-id>
+   haltwire unfreeze . --reviewer <your-reviewer-id>
    ```
 
 3. Verify the workspace is restored:
 
    ```bash
-   sandbox status .
+   haltwire status .
    ```
 
    The `FROZEN` line should no longer appear.

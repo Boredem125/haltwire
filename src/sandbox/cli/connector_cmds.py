@@ -368,7 +368,11 @@ def init_cmd(path: str, claude: bool, mcp: bool, codex: bool, auto_allow: bool, 
     click.echo("\nNote: test and script runs (`python -m pytest`, `npm run`, `npm test`, ...) escalate by "
                "default, because they run code the agent can write. A team can opt in with an approved "
                "two-reviewer change to `shell.allow_runners` (ADR 0009).")
-    click.echo("\nRun `sandbox watch` in another terminal to approve escalations.")
+    import sys as _sys
+    _cli_name = _sys.argv[0].rsplit("/", 1)[-1].rsplit("\\", 1)[-1].split(".")[0] if _sys.argv else "sandbox"
+    if _cli_name not in ("sandbox", "haltwire"):
+        _cli_name = "haltwire"
+    click.echo(f"\nRun `{_cli_name} watch` in another terminal to approve escalations.")
 
 
 @click.command("doctor")
@@ -1424,12 +1428,14 @@ def uninstall_cmd(path: str, keep_data: bool, yes: bool) -> None:
 
 
 @click.command("unfreeze")
-@click.option("--path", default=".", help="Project folder (or any parent).")
+@click.argument("path", default=None, required=False)
+@click.option("--path", "opt_path", default=".", help="Project folder (or any parent).")
 @click.option("--reviewer", required=True, help="Reviewer id with a signing key.")
-def unfreeze_cmd(path: str, reviewer: str) -> None:
+def unfreeze_cmd(path: str | None, opt_path: str, reviewer: str) -> None:
     """Clear the quarantine flag after a tripwire violation.
 
     Requires the approver signing key; writes a signed audit record.
+    PATH can be given as a positional argument or via --path.
     """
     import json as _json
 
@@ -1437,7 +1443,9 @@ def unfreeze_cmd(path: str, reviewer: str) -> None:
     from sandbox.connector.layout import FolderLayout
     from sandbox.connector.signing import sign_record
 
-    layout = FolderLayout.discover(path)
+    # Positional argument takes precedence over --path option
+    effective_path = path if path is not None else opt_path
+    layout = FolderLayout.discover(effective_path)
     if layout is None:
         click.echo("No .sandbox/ found here or above. Run `sandbox init` first.")
         raise SystemExit(1)

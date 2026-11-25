@@ -47,6 +47,80 @@ def keys_status(path: str) -> None:
         click.echo("No retired in-tree seeds.")
 
 
+@keys_group.command("pin")
+@click.argument("reviewer_id")
+@click.option("--path", default=".", help="A folder inside the workspace.")
+@click.option("--force", is_flag=True, help="Overwrite an existing pin with a different key.")
+def keys_pin(reviewer_id: str, path: str, force: bool) -> None:
+    """Create or load a reviewer's signing key and pin it for this workspace.
+
+    The pinned key is what `unfreeze --reviewer` checks. If the reviewer is
+    already pinned with the same key, this is a no-op. If pinned with a
+    different key, the command refuses unless --force is given.
+    """
+    from sandbox.connector import keyhome
+    from sandbox.connector.signing import _load_or_create_key
+
+    layout = _layout(path)
+    try:
+        key = _load_or_create_key(layout, reviewer_id)
+    except keyhome.KeyHomeError as exc:
+        click.echo(f"Key home unavailable: {exc}", err=True)
+        raise SystemExit(1)
+
+    pub_hex = bytes(key.verify_key).hex()
+    fingerprint = pub_hex[:16]
+
+    # Check existing pin
+    existing = keyhome.get_pinned_key(layout, reviewer_id)
+    if existing is not None:
+        if existing == pub_hex:
+            click.echo(f"Reviewer {reviewer_id!r} is already pinned with this key (fingerprint {fingerprint}).")
+            return
+        # Different key
+        if not force:
+            old_fp = existing[:16]
+            click.echo(
+                f"Reviewer {reviewer_id!r} is already pinned with a different key.\n"
+                f"  old fingerprint: {old_fp}\n"
+                f"  new fingerprint: {fingerprint}\n"
+                f"Use --force to overwrite.",
+                err=True,
+            )
+            raise SystemExit(1)
+        # Force: overwrite the pin by writing the pins file directly
+        import json as _json
+        import time
+        pins = keyhome.read_pins(layout)
+        pins[reviewer_id] = {
+            "public_key": pub_hex,
+            "workspace_root": str(layout.root),
+            "pinned_at": time.time(),
+            "retired_at": None,
+        }
+        p = keyhome._pins_path(layout)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(_json.dumps(pins, indent=2), encoding="utf-8")
+        click.echo(f"Reviewer {reviewer_id!r} re-pinned (--force).")
+        click.echo(f"  fingerprint: {fingerprint}")
+        try:
+            d = keyhome.workspace_key_dir(layout, create=False)
+            click.echo(f"  key home:    {d}")
+        except keyhome.KeyHomeError:
+            pass
+        return
+
+    # New pin
+    keyhome.write_pin(layout, reviewer_id, pub_hex)
+    click.echo(f"Reviewer {reviewer_id!r} pinned.")
+    click.echo(f"  fingerprint: {fingerprint}")
+    try:
+        d = keyhome.workspace_key_dir(layout, create=False)
+        click.echo(f"  key home:    {d}")
+    except keyhome.KeyHomeError:
+        pass
+
+
 @keys_group.command("purge-legacy")
 @click.option("--path", default=".", help="A folder inside the workspace.")
 @click.option("--yes", is_flag=True, help="Do not ask for confirmation.")
