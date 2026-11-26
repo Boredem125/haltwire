@@ -30,6 +30,19 @@ class ShellPolicy(BaseModel):
         default_factory=lambda: [
             r"^git (status|diff|log|show|branch|rev-parse)(\s|$)",
             r"^(ls|dir|pwd|cd|cat|type|echo|which|where)(\s|$)",
+            # PowerShell names of the same read-only commands (agy and Claude Code on
+            # Windows use them): ls/dir = Get-ChildItem, cat/type = Get-Content,
+            # pwd = Get-Location, echo = Write-Output.  Same checks apply: no
+            # redirect, every chained segment allowlisted, paths outside the folder held.
+            r"^(?i:get-childitem|gci|get-content|gc|get-location|gl|get-item|gi|"
+            r"test-path|resolve-path|write-output|where\.exe)(\s|$)",
+            # Version and installed-package queries; nothing is installed, run or fetched.
+            r"^(?i:python3?|py|node|pip3?|uv)\s+(--version|-V)$",
+            # `pip` only (its console script does not import from the folder; `python -m pip`
+            # would run a pip.py the agent wrote).  No options: --outdated/--index-url
+            # would contact a server.  npm is left out: it reads the folder's .npmrc.
+            r"^(?i:pip3?)\s+(list|freeze)$",
+            r"^(?i:pip3?)\s+show\s+[A-Za-z0-9._-]+$",
         ]
     )
     deny_patterns: list[str] = Field(default_factory=list)

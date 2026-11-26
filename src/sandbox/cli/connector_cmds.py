@@ -362,6 +362,25 @@ def init_cmd(path: str, claude: bool, mcp: bool, codex: bool, agy: bool, gemini:
             who = default_reviewer()
             entry = pv.baseline(layout, who, "initial policy written by sandbox init")[0]
             click.echo(f"  version:  {entry['version']} (baseline, recorded by {who})")
+    # Pin the person running init as the first reviewer, so pressing u in
+    # `watch` and typing their name unfreezes without a separate
+    # `keys pin` step.  Only when the workspace has no pins yet: an
+    # existing pin is never replaced.  The private key stays in the key
+    # home, which the hook denies to the agent.
+    try:
+        from sandbox.connector import keyhome as _kh
+        from sandbox.connector.approval import default_reviewer as _default_reviewer
+        from sandbox.connector.layout import FolderLayout as _FolderLayout
+        from sandbox.connector.signing import _load_or_create_key
+
+        _lay = _FolderLayout(result["root"])
+        if not _kh.read_pins(_lay):
+            _who = _default_reviewer()
+            _key = _load_or_create_key(_lay, _who)
+            _kh.write_pin(_lay, _who, bytes(_key.verify_key).hex())
+            click.echo(f"  reviewer: {_who} (pinned: in watch, press u and type {_who} to unfreeze)")
+    except Exception as exc:  # noqa: BLE001 - init must still succeed
+        click.echo(f"  reviewer: not pinned ({exc}); run `keys pin <your-name>`", err=True)
     click.echo(f"  hook:     {result['stub']}")
     if result["settings"]:
         click.echo(f"  settings: {result['settings']}")

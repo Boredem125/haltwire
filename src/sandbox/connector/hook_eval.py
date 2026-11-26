@@ -151,9 +151,11 @@ def _format_pending(request_id: str, reason_code: str = "", detail: str = "") ->
     detail_line = f" ({detail})" if detail else ""
     return (
         f"{prefix}escalated as request {request_id}{detail_line} — no human decision yet. "
-        "Ask the user to approve it in their `sandbox watch` terminal, then "
+        "Ask the user to approve it in their `haltwire watch` terminal, then "
         f'call the sandbox MCP tool check_request("{request_id}") to retrieve '
-        "the output. Do not retry the command directly."
+        "the output. If you do not have that tool, tell the user you will run the "
+        "command once more and that they should approve it in `haltwire watch` "
+        "within 55 seconds; the approved result is then returned to you directly."
     )
 
 

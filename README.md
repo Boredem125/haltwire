@@ -1,102 +1,138 @@
-# Agent Governance Gateway
+# haltwire
 
-**Authorization and runtime governance for AI coding agents.** Every Claude Code tool call is intercepted, classified and recorded. Codex, Cursor and Windsurf are governed only through the gateway's MCP tools; their built-in shell and file tools are not intercepted. Risky actions go to a named human, who runs them outside the agent. Everything is signed and audited.
+**A tripwire and approval gate for AI coding agents.** haltwire sits between your coding agent and your machine. Every tool call (shell, file, web, MCP) is checked before it runs. Safe work goes through, risky actions wait for you, and an agent that touches bait gets frozen on the spot.
 
 > An AI agent having a *capability* is not the same as it having *authority*.
 
-## What it does
-
-- **Intercepts every tool call** (shell, file, web and MCP) via Claude Code hooks and an MCP server, and returns **allow / observe / escalate / deny** with an itemized, explainable risk score.
-- **Keeps the agent unprivileged:** approved commands run in a broker outside the agent. For third-party MCP calls the sandbox can't make itself, a human approves the exact call and the agent's identical retry is allowed once.
-- **Dual control:** critical actions (e.g. a command that sends `.env` out) need two approvals by different reviewers with different keys, each signed.
-- **Detects intent, not just keywords** (optional, local): a small distilled classifier plus [jev-os](https://github.com/Boredem125/jev-os) zero-shot checks scan what the agent *reads* for prompt injection, sentence by sentence. On a hit, even allowlisted shell and network actions need a human.
-- **Governance-as-code:** plain-language clauses ("no moving money without human review") mapped to EU AI Act / GDPR / SR 11-7 references, checked on shell commands and on MCP/WebFetch calls, with a `test` command that measures each clause before you trust it.
-- **Governance records:** versioned policies with second-reviewer change control and drift protection, a signed evidence pack for auditors, oversight metrics with approval-fatigue detection, and dev/staging/prod plus data-classification rules.
-- **Operations:** every tool call is audited, with secrets scrubbed from output and logs. Denials and critical actions raise alerts (local log plus an optional webhook). Per-class rate limits stop an agent that loops, and audit retention is tiered at 90 days, 1 year or 7 years.
-
-**Design rule:** models may only *raise* scrutiny. Deterministic rules stay in charge, so a fooled model means an extra approval, never an open door.
-
-## Results (measured, laptop CPU)
-
-Prompt injection in what the agent reads, held-out sets (caught, false alarms):
-
-| Set | Keyword rules (before) | jev-os checks | Shipped (jev-os OR student) |
-|---|---|---|---|
-| Injections in repo files (600) | 60/309, 39/291 | 86/309, 8/291 | **256/309, 14/291** |
-| deepset, genuine attacks | 0/39, 0/56 | 26/39, 1/56 | **31/39, 1/56** |
-| neuralchemy (942 texts) | 156/552, 3/390 | 324/552, 86/390 | **525/552, 96/390** |
-
-- Governance on MCP/WebFetch calls: 16/20 violations caught, 0/24 benign calls flagged (frozen test set).
-- Red team: 10 of 113 evasive attacks still get through, all plain-sounding instructions with no AI wording. That case is left to the authorization layer.
-- AIUC-1 (the AI agent standard, July 2026 release): 5 of 51 requirements supported, 16 partial, 30 not covered, self-assessed with the gap for each ([mapping](docs/AIUC-1_MAP.md)). Most of the 30 are organizational processes a runtime tool can't supply.
-- Every adoption decision used a rule written before the test run; two candidates that missed their rule were not shipped. Full numbers, method and limits: [the write-up](docs/INTENT_AWARE_AUTHORIZATION.md).
-
-## Security of the gateway itself
-
-CI runs Semgrep, Gitleaks, Trivy and a ZAP API scan on every push, with SARIF upload and a severity gate. Fixed along the way: an unauthenticated HTTP API that let anyone approve and run commands, an endpoint that would pull and run any Docker image, and every real 500 ZAP found. See [SECURITY.md](SECURITY.md).
-
-## Tech
-
-Python 3.12 · FastAPI · MCP · Claude Code hooks · ONNX Runtime · Pydantic · PyNaCl (Ed25519) · pytest (679 tests collected, 18 Oct 2026)
+Works with **Claude Code** (full hooks) and **Antigravity / agy** (`--agy`). Gemini CLI hooks are experimental (`--gemini`). Codex, Cursor and Windsurf are covered only through haltwire's MCP tools; their built-in shell and file tools are not intercepted.
 
 ## Quick start
 
+Needs git, Python 3.12+ and [uv](https://docs.astral.sh/uv/) (or pipx).
+
 ```bash
+cd your-project
+npx github:Boredem125/haltwire init     # set up this folder
+haltwire watch                          # dashboard, in a second terminal
+claude                                  # your agent, as usual
+```
+
+`init` installs the `haltwire` command once (a persistent `uv tool install` pinned to this release), then sets up the folder:
+
+- `.sandbox/` with the policy, the audit log and the approval queue
+- Claude Code hooks in `.claude/settings.local.json` (plus `.agents/hooks.json` with `--agy`)
+- decoy files (`.env.backup`, `deploy_key.pem`, `.aws/credentials.bak`) holding unique fake secrets, kept out of git via `.git/info/exclude` (skip with `--no-canaries`)
+- you, pinned as the reviewer who can unfreeze this folder
+
+It does not touch your code. `haltwire uninstall` removes what it added.
+
+## What it stops
+
+| The agent tries to... | haltwire does | You see in `watch` |
+|---|---|---|
+| read, list or edit inside the project | allows it | grey `ALLOW` line |
+| install a look-alike package (`pandaz-csv` for `pandas`) | holds it for you | yellow `WAIT` + `TYPOSQUAT` |
+| read a decoy credential file | **freezes the folder**: every tool except reads is denied | red `FROZEN` banner |
+| send a decoy secret out, in any encoding | freezes the folder | red `FROZEN` banner |
+| make network calls after decoy data appeared in its output | holds each call for you; payload uploads are denied | `WAIT` + `CANARY_TAINT` |
+| edit or delete its own hook config | denies it | red `DENY` |
+| something the AI judge finds off-task (optional) | holds it for you | `AI!` + Gemini's reasoning |
+
+Approved commands run outside the agent, and their output is handed back. Every decision goes into a signed, hash-chained audit log (`haltwire verify` checks it).
+
+**Design rule:** the AI judge can only *raise* scrutiny. The deterministic rules stay in charge, so a fooled model means one extra approval, never an open door.
+
+## The dashboard
+
+`haltwire watch` is a terminal dashboard. The header shows the folder status (PROTECTED / FROZEN) and the AI judge state. Below it are counts, the queue waiting for you, a details card for the selected item, and the live activity feed.
+
+| Key | Action |
+|---|---|
+| `a` / `d` | approve / deny the selected request |
+| `u` | unfreeze (asks for your reviewer id, signs the unfreeze) |
+| `k` | set the Gemini API key (tested before it is saved) |
+| `j` | turn the AI judge on or off |
+| `r` / `?` / `q` | refresh / help / quit |
+
+`haltwire watch --plain` gives a plain-text view for terminals without full-screen support. `NO_COLOR` is respected.
+
+## AI judge (optional)
+
+The Gemini intent judge compares each shell, write and network call with the task you gave the agent, and holds anything that does not fit. It is off by default and uses your own key.
+
+```bash
+haltwire watch     # press k, paste the key, then j
+# or: set GEMINI_API_KEY in the agent's environment, then
+haltwire ai on
+haltwire ai status
+```
+
+A key set with `k` is stored per user, outside every repo, readable only by you, and the agent is denied access to it. Secrets and decoy values are scrubbed from the prompt before anything is sent. On timeout or error the judge adds nothing, and the rules still apply.
+
+## Frozen? Unfreeze
+
+In `watch`, press `u` and type your reviewer id (`init` pinned your OS user name). From the command line:
+
+```bash
+haltwire status .
+haltwire unfreeze . --reviewer <your-id>
+```
+
+Only a reviewer with a pinned signing key can unfreeze. That key lives outside the project, where the agent cannot read it, so the agent cannot unfreeze itself. Each unfreeze is a signed audit record. For a folder set up before 0.1.5, pin yourself once with `haltwire keys pin <your-id>`.
+
+## Useful commands
+
+```bash
+haltwire status .          # policy, frozen or not, anything pending
+haltwire verify .          # check the audit chain has not been tampered with
+haltwire explain <id>      # why a call was held or denied
+haltwire changes .         # files the agent modified or deleted
+haltwire restore <file> .  # put a file back
+haltwire doctor .          # check the hooks are wired correctly
+```
+
+The CLI is also installed as `sandbox`. Both names run the same commands.
+
+To send alerts to Slack, Teams or Google Chat, set `SANDBOX_ALERT_WEBHOOK` to the incoming-webhook URL. Google Chat webhooks get a formatted card.
+
+## Install options
+
+```bash
+npx github:Boredem125/haltwire init          # from GitHub, no npm account needed
+npx haltwire init                            # once published to npm
+uv tool install git+https://github.com/Boredem125/haltwire@v0.1.5   # without Node
+```
+
+The npx launcher is a small Node.js script with no dependencies. It finds `uv` (or `pipx`) and installs the Python package from the matching git tag. If neither is found, it prints the one-line install command for your OS. `--install-uv` lets it install uv for you (it asks first). `HALTWIRE_REF` overrides the git ref.
+
+From source:
+
+```bash
+git clone https://github.com/Boredem125/haltwire && cd haltwire
 pip install -e ".[dev]"
-sandbox init . --claude --mcp      # connect a folder
-sandbox watch .                    # approve escalations in another terminal
+pytest
 ```
 
-Useful commands: `sandbox verify` (audit chains), `sandbox explain <id>`, `sandbox alerts`, `sandbox oversight`, `sandbox retention`, `sandbox export-evidence --out pack.zip`, `sandbox policy history`.
+More: [GETTING_STARTED.md](GETTING_STARTED.md) · [SECURITY.md](SECURITY.md)
 
-To send alerts to Slack, Teams or any collector, set `SANDBOX_ALERT_WEBHOOK` to its incoming-webhook URL.
+## Free and team editions
 
-Guided walkthrough: `python demo/call_demo.py` runs 12 scenes through the real gateway, from normal work to a poisoned README, `.env` theft stopped by dual control, governance clauses on a Stripe call, a tampered log and an evidence pack. The agent is scripted to act as if it were fooled; everything else is the real gateway. Start `jevos serve` first for the governance scene. For a live session with the real Claude Code, `python demo/live_setup.py` builds the same project with hooks connected, and `python demo/try.py preset steal-env` (or any tool call you name) sends one call through the gateway while you approve or deny it in `sandbox watch`.
-
-Optional intent-aware layer: `pip install -e ".[semantic]"`, then `jevos serve` and `sandbox semantic enable .`
-
-## Docs
-
-[Write-up: intent-aware authorization](docs/INTENT_AWARE_AUTHORIZATION.md) · [Full details](docs/DETAILS.md) · [Threat model](docs/THREAT_MODEL.md) · [Governance-as-code](docs/GOVERNANCE.md) · [Evidence pack](docs/EVIDENCE.md) · [Data and environment](docs/DATA_AND_ENVIRONMENT.md) · [Compliance mapping](docs/COMPLIANCE_MAP.md) · [AIUC-1 mapping](docs/AIUC-1_MAP.md) · [Benchmarks](benchmarks/injection/README.md)
-
-*Compliance mappings show design intent, not certification. No software is "compliant" on its own; organisations are.*
-
-## Licence
-
-Licensed under the [MIT License](LICENSE).
-
-## Install with npx
-
-The quickest way to try haltwire on a fresh machine (requires git and Python 3.12+):
-
-```bash
-# Works now (no npm publish needed):
-npx github:Boredem125/haltwire init
-
-# After the package is published to npm:
-npx haltwire init
-```
-
-This installs nothing globally. Under the hood, `npx` runs a thin Node.js launcher that calls `uvx` (or `pipx`) to fetch the Python package from GitHub and run `haltwire init .` in the current directory. If `uvx` is not installed, the launcher prints the one-line install command for your OS.
-
-Pass `--install-uv` to let the launcher install uv for you (asks for confirmation first, or pass `--yes` to skip the prompt).
-
-Set `HALTWIRE_REF` to override the git ref (branch, tag or commit SHA) that is fetched.
+Everything in this repo is free and MIT licensed: one developer, run locally, your own Gemini key. Team features (SSO, centrally signed policy, a shared approval inbox, fleet-wide audit and compliance evidence, a managed AI judge) are a separate commercial edition.
 
 ## Arena demo
 
-The arena is an interactive red-team demo that shows the gateway stopping real attacks. To run it locally:
+The arena is an interactive red-team demo of the same checks stopping live attacks.
 
 ```bash
 pip install -e ".[arena]"
-cp deploy/.env.example deploy/.env   # edit with your keys (GEMINI_API_KEY, etc.)
-python -m arena.server               # starts on http://localhost:8133
+cp deploy/.env.example deploy/.env   # add GEMINI_API_KEY, GOOGLE_CHAT_WEBHOOK, ...
+python -m arena.server               # http://localhost:8133
 ```
 
-Environment variables are documented in `deploy/.env.example`. The key ones: `GEMINI_API_KEY` (Gemini intent judge), `GOOGLE_CHAT_WEBHOOK` (alerts to Google Chat), `ARENA_RUNS` (session storage directory, defaults to system temp).
+## Security of haltwire itself
 
-## Source
+CI runs Semgrep, Gitleaks and Trivy on every push, with a severity gate. Hooks run in exec form (no shell), and they fail closed. See [SECURITY.md](SECURITY.md) to report a problem.
 
-```
-https://github.com/Boredem125/haltwire
-```
+## Licence
+
+[MIT](LICENSE)

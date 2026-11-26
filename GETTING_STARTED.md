@@ -218,8 +218,10 @@ If you see `FROZEN: yes (tripwire)`, the workspace is quarantined.
 
 **To unfreeze:**
 
-1. First, make sure you have a pinned reviewer key. If you set up with
-   `haltwire init`, your key was auto-created but you need to pin it:
+1. You need a pinned reviewer key. Since 0.1.5, `haltwire init` pins the
+   user who ran it (your OS user name; `init` prints it as `reviewer:`), so
+   in `haltwire watch` you can press `u` and type that name. For a folder
+   set up with an older version, or to add another reviewer, pin once:
 
    ```bash
    haltwire keys pin <your-reviewer-id>

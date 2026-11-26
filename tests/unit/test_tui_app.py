@@ -467,7 +467,7 @@ asyncio.run(run())
         existing_pp = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = src_dir + (os.pathsep + existing_pp if existing_pp else "")
         result = subprocess.run(
-            [sys.executable, "-c", script],
+            [sys.executable, "-c", script],  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args  -- test: fixed interpreter, script built from tmp_path fixture
             capture_output=True, text=True, timeout=30, env=env,
         )
         assert result.returncode == 0, f"Subprocess failed: {result.stderr}"

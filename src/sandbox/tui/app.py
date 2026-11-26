@@ -166,6 +166,8 @@ def _coloured_reason(code: str) -> str:
 def _event_colour(event: str) -> str:
     """Rich colour hex for an audit event type (explicit hex for SVG fidelity)."""
     e = event.lower()
+    if e == "setup":
+        return "#636e72"
     if "quarantine" in e or "tripwire" in e:
         return "bold #ff4444"
     if "denied" in e or "deny" in e or "refused" in e:
@@ -186,6 +188,8 @@ def _event_colour(event: str) -> str:
 def _event_icon(event: str) -> str:
     """Short glyph for event types (Windows Terminal / Cascadia safe)."""
     e = event.lower()
+    if e == "setup":
+        return "·"
     if "quarantine" in e or "tripwire" in e:
         return "■"
     if "denied" in e or "deny" in e or "refused" in e:
@@ -204,6 +208,8 @@ def _event_icon(event: str) -> str:
 def _event_badge(event: str) -> str:
     """Short badge label for the event feed."""
     e = event.lower()
+    if e == "setup":
+        return "SETUP"
     if "quarantine" in e or "tripwire" in e:
         return "FROZEN"
     if "denied" in e or "deny" in e or "refused" in e:
@@ -359,10 +365,65 @@ def _format_event(ev: dict[str, Any], etype: str) -> str:
     return f"{etype}{extra}"
 
 
+_SETUP_EVENTS = {
+    "policy_version_accepted": "policy loaded",
+    "key_pinned": "approver key pinned",
+    "folder_initialized": "folder initialised",
+    "canaries_planted": "decoys planted",
+}
+
+
+def _effective_type(ev: dict[str, Any]) -> str:
+    """Map raw audit event names to what the human cares about.
+
+    ``shell_decided`` carries the outcome in ``state``; setup records
+    (policy load, key pin) are shown as a quiet SETUP line.
+    """
+    etype = str(ev.get("event", ev.get("type", "unknown")))
+    e = etype.lower()
+    if e.endswith("_decided") or e == "decided":
+        state = str(ev.get("state", "")).lower()
+        if state in ("approved", "allowed", "approve"):
+            return "approved"
+        if state in ("denied", "deny", "expired", "timeout", "rejected"):
+            return "denied"
+    if e in _SETUP_EVENTS:
+        return "setup"
+    return etype
+
+
+def _feed_target(ev: dict[str, Any]) -> str:
+    """What the action touched: command, else file name, else host."""
+    if ev.get("command"):
+        return _safe(str(ev["command"]), 60)
+    target = str(ev.get("target") or "")
+    if target:
+        return _safe(Path(target).name or target, 60)
+    if ev.get("host"):
+        return _safe(str(ev["host"]), 60)
+    return ""
+
+
 def _format_feed_line(ev: dict[str, Any], etype: str) -> str:
     """Compact one-line description for the event feed (badge shows type)."""
     e = etype.lower()
     rid = _short_id(ev.get("request_id", "")) if ev.get("request_id") else ""
+    raw = str(ev.get("event", ev.get("type", ""))).lower()
+
+    if e == "setup":
+        label = _SETUP_EVENTS.get(raw, raw.replace("_", " "))
+        how = ev.get("how")
+        return f"[#636e72]{label}{f' ({_safe(str(how), 20)})' if how else ''}[/]"
+
+    if e in ("allowed", "allow"):
+        tool = _safe(str(ev.get("tool", "")), 32)
+        what = _feed_target(ev)
+        return f"[#8a8f98]{tool}[/] {what}".strip() if tool else (what or "allowed")
+
+    if e.endswith("_escalated") and e != "typosquat_escalated":
+        code = str(ev.get("reason_code", ""))
+        tail = f"  {_coloured_reason(code)}" if code else ""
+        return " ".join(p for p in (rid, _feed_target(ev)) if p) + tail
 
     if e == "intent_error":
         err = ev.get("error", "unknown")
@@ -675,9 +736,22 @@ class HaltwireApp(App[None]):
 
         from sandbox.connector.aikey import get_key, key_source
         ks = key_source()
-        if ks:
+        try:
+            from sandbox.connector.policy import load_policy
+            _intent = getattr(load_policy(self._layout.policy_file), "intent", None)
+            judge_on = bool(getattr(_intent, "enabled", False))
+        except Exception:  # noqa: BLE001
+            judge_on = False
+        # "on" only when the hook will really call the judge: key AND policy.
+        if ks and judge_on:
             ai_w.update(" AI judge: on ")
             ai_w.set_classes("ai-on")
+        elif ks:
+            ai_w.update(" AI: off - press j ")
+            ai_w.set_classes("ai-nokey")
+        elif judge_on:
+            ai_w.update(" AI: no key - press k ")
+            ai_w.set_classes("ai-nokey")
         else:
             ai_w.update(" AI: off - press k ")
             ai_w.set_classes("ai-nokey")
@@ -962,7 +1036,7 @@ class HaltwireApp(App[None]):
         # Compute stats from all events (before slicing for display)
         stats: dict[str, int] = {"allowed": 0, "denied": 0, "ai": 0}
         for ev in events:
-            et = ev.get("event", ev.get("type", "")).lower()
+            et = _effective_type(ev).lower()
             if "allowed" in et or "allow" in et:
                 stats["allowed"] += 1
             if "denied" in et or "refuse" in et:
@@ -976,7 +1050,7 @@ class HaltwireApp(App[None]):
         # Update feed panel title
         try:
             fp = self.query_one("#feed-panel", Vertical)
-            fp.border_title = f"Live activity ({len(events)})"
+            fp.border_title = "Live activity"
         except Exception:
             pass
 
@@ -988,11 +1062,39 @@ class HaltwireApp(App[None]):
             )
             return
 
+        # Decisions carry only request_id: borrow the command from the
+        # escalation.  A typosquat_escalated line is followed by the
+        # shell_escalated for the same command: show only the latter.
+        cmd_by_rid: dict[str, str] = {}
+        for ev in events:
+            if ev.get("request_id") and ev.get("command"):
+                cmd_by_rid[ev["request_id"]] = ev["command"]
+        shown: list[dict[str, Any]] = []
+        for i, ev in enumerate(events):
+            raw = str(ev.get("event", "")).lower()
+            nxt = events[i + 1] if i + 1 < len(events) else {}
+            if (raw == "typosquat_escalated"
+                    and str(nxt.get("event", "")).lower().endswith("_escalated")
+                    and nxt.get("command") == ev.get("command")):
+                continue
+            if not ev.get("command") and ev.get("request_id") in cmd_by_rid:
+                ev = {**ev, "command": cmd_by_rid[ev["request_id"]]}
+            shown.append(ev)
+        events = shown
+        try:
+            self.query_one("#feed-panel", Vertical).border_title = (
+                f"Live activity ({len(events)})")
+        except Exception:
+            pass
+
         lines: list[str] = []
         for ev in events:
-            etype = ev.get("event", ev.get("type", "unknown"))
+            etype = _effective_type(ev)
             ts = ev.get("ts", ev.get("timestamp", 0))
-            ts_str = time.strftime("%H:%M:%S", time.localtime(ts)) if ts else "??:??:??"
+            try:
+                ts_str = time.strftime("%H:%M:%S", time.localtime(float(ts))) if ts else "--:--:--"
+            except (TypeError, ValueError, OverflowError, OSError):
+                ts_str = "--:--:--"
             colour = _event_colour(etype)
             icon = _event_icon(etype)
             badge = _event_badge(etype)
@@ -1221,10 +1323,25 @@ class HaltwireApp(App[None]):
             if not get_key():
                 self.notify("No Gemini API key. Press k to set one first.", severity="warning")
                 return
-            self.notify(
-                "Run haltwire policy set intent.enabled true to enable.",
-                severity="information",
-            )
+            # Turning the judge on only tightens the policy, so one reviewer
+            # (the human at this keyboard) is enough; it is recorded as a
+            # policy version like `haltwire ai on`.
+            try:
+                from sandbox.connector.approval import default_reviewer
+                from sandbox.connector.policy_versions import apply_edit
+
+                pol.intent.enabled = True
+                out = apply_edit(self._layout, pol, default_reviewer(), "ai on (watch: j)")
+                if out.get("status") == "proposed":
+                    self.notify("AI judge change proposed; a second reviewer must approve it.",
+                                severity="warning")
+                else:
+                    self.notify("AI judge on: shell, write and network calls are now checked.",
+                                severity="information")
+            except Exception as exc:  # noqa: BLE001 - never crash the dashboard
+                self.notify(f"Could not turn the AI judge on: {exc}. Run: haltwire ai on",
+                            severity="error")
+        self._do_refresh()
 
     def action_refresh(self) -> None:
         self._do_refresh()

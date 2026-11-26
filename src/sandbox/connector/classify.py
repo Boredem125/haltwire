@@ -202,6 +202,9 @@ def _under(comps: list[str], root: list[str]) -> bool:
     return comps[:len(root)] == root
 
 
+_PS_PROVIDER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]+:")
+
+
 def _outside_root_args(command: str, shell: str, root: str, cwd: str, prefixes: list[str]) -> list[str]:
     """SEC-29: the path arguments of an allowlisted command that do not resolve inside the
     governed root (or an allowed read prefix). Network paths are never looked up; once the
@@ -225,15 +228,29 @@ def _outside_root_args(command: str, shell: str, root: str, cwd: str, prefixes: 
     for seg in lexed.segments:
         if seg.words and shellwords.bases(seg.words[0].raw) & {"echo"}:
             continue
+        is_git = bool(seg.words and "git" in shellwords.bases(seg.words[0].raw))
         for w in seg.words[1:] + [t for op, t in seg.redirs if not _fd_dup(op, t)]:
             raw = w.raw
             if raw.startswith("-"):
-                raw = raw.split("=", 1)[1] if "=" in raw else ""
+                # `--opt=value`, and PowerShell's `-Path:value` form.
+                if "=" in raw:
+                    raw = raw.split("=", 1)[1]
+                elif ":" in raw:
+                    raw = raw.split(":", 1)[1]
+                else:
+                    raw = ""
             if not raw:
                 continue
             if w.tilde or raw.startswith("~"):
                 raw = os.path.expanduser(raw)
             if keyhome.is_network_path(raw):
+                out.append(raw)
+                continue
+            # PowerShell provider paths (env:, HKLM:, cert:, WSMan:, function:, ...)
+            # are not files: `Get-ChildItem env:` dumps every environment variable.
+            # A drive letter has one letter before the colon; a provider has two or
+            # more.  git revision syntax (HEAD:file) is not a path, so git is exempt.
+            if not is_git and _PS_PROVIDER_RE.match(raw):
                 out.append(raw)
                 continue
             p = keyhome.strip_device(raw)
@@ -689,7 +706,8 @@ def _git_flags_ok(sub: str, args: list[str]) -> bool:
     return True
 
 
-_PLAIN_CMDS = frozenset("ls dir pwd cd cat type echo which where".split())
+_PLAIN_CMDS = frozenset(("ls dir pwd cd cat type echo which where get-childitem gci get-content gc "
+                         "get-location gl get-item gi test-path resolve-path write-output where.exe").split())
 
 
 def _flags_ok(words: list[str]) -> bool:
