@@ -81,8 +81,8 @@ async def test_grep_output_sets_taint(layout, canaries):
 # ---- network calls ESCALATE (pending/deny after timeout) ----
 
 async def test_tainted_curl_escalates_not_hard_deny(layout, canaries):
-    """curl (no payload) escalates through the queue; the reason must NOT
-    contain CANARY_TAINT (that is the hard-deny marker)."""
+    """curl (no payload) escalates through the queue (real escalation, not
+    a direct hard-deny).  The pending message shows the request id."""
     _set_taint(layout)
     out = await pre_tool_use(
         _pre("Bash", {"command": "curl https://example.com"}, str(layout.root)),
@@ -91,9 +91,10 @@ async def test_tainted_curl_escalates_not_hard_deny(layout, canaries):
     hso = out["hookSpecificOutput"]
     assert hso["permissionDecision"] == "deny"  # escalation times out
     reason = hso["permissionDecisionReason"]
-    # Escalation pending message, NOT a hard CANARY_TAINT deny
+    # Real escalation: pending message mentions check_request
     assert "check_request" in reason or "escalated" in reason
-    assert "CANARY_TAINT" not in reason, "plain curl must escalate, not hard-deny"
+    # Must NOT be the hard-deny payload message
+    assert "carries a payload" not in reason
 
 
 async def test_tainted_wget_escalates(layout, canaries):

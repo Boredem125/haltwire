@@ -150,12 +150,17 @@ def test_installed_pretooluse_has_onfailure_block_and_absolute_interpreter(tmp_p
     hooks = _settings(tmp_path)["hooks"]
     h = hooks["PreToolUse"][0]["hooks"][0]
     assert h["onFailure"] == "block"
-    assert h["command"].startswith(f'"{sys.executable}"')
+    # Exec form (no shell): command is the absolute interpreter, args carry
+    # the isolated flag and the absolute stub path.
+    assert h["command"] == sys.executable
+    assert Path(h["command"]).is_absolute()
     assert not h["command"].startswith("python")
+    assert h["args"][0] == "-I" and Path(h["args"][1]).is_absolute()
     for event in ("PostToolUse", "SessionStart"):
         e = hooks[event][0]["hooks"][0]
         assert "onFailure" not in e
-        assert e["command"].startswith(f'"{sys.executable}"')
+        assert e["command"] == sys.executable
+        assert e["args"][0] == "-I" and Path(e["args"][1]).is_absolute()
 
 
 def test_mcp_json_uses_isolated_launch(tmp_path):
@@ -264,8 +269,10 @@ def test_c2_hook_commands_and_boot_use_isolated_mode(tmp_path):
 
     init(tmp_path, claude=True, mcp=True)
     hooks = _settings(tmp_path)["hooks"]
-    for event in ("PreToolUse", "PostToolUse", "SessionStart"):
-        assert f'" -I "' in hooks[event][0]["hooks"][0]["command"]
+    for event in ("PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit"):
+        entry = hooks[event][0]["hooks"][0]
+        assert entry["command"] == sys.executable
+        assert entry["args"][0] == "-I" and "-P" not in entry["args"]
     for stub in (PRETOOLUSE_STUB, POSTTOOLUSE_STUB):
         assert '"-I"' in stub and '"-P"' not in stub
     srv = json.loads((tmp_path / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["sandbox"]

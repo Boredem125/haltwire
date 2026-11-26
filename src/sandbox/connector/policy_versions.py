@@ -225,7 +225,8 @@ _MIN_FIELDS = (("semantic", "threshold"), ("semantic", "screen_threshold"),
                ("limits", "shell"), ("limits", "write"), ("limits", "network"), ("limits", "total"))
 _MAX_FIELDS = (("semantic", "taint_ttl_seconds"), ("semantic", "max_scan_chars"),
                ("audit", "retention_days"), ("audit", "retention_days_reviewed"),
-               ("audit", "retention_days_incident"), ("limits", "window_seconds"))
+               ("audit", "retention_days_incident"), ("limits", "window_seconds"),
+               ("intent", "timeout_seconds"))
 # Every other field (URLs, timeouts, the governance pointer, ...) has no
 # "stricter" direction, so the approved value is kept.
 

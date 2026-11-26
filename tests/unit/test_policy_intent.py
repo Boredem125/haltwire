@@ -22,11 +22,11 @@ from sandbox.connector.policy import (
 
 
 def test_intent_default():
-    """The default policy has intent disabled with 8s timeout."""
+    """The default policy has intent disabled with 12s timeout (Gemini min 10s)."""
     p = default_policy()
     assert hasattr(p, "intent")
     assert p.intent.enabled is False
-    assert p.intent.timeout_seconds == 8
+    assert p.intent.timeout_seconds == 12
 
 
 def test_intent_survives_round_trip(tmp_path):
@@ -72,7 +72,7 @@ def test_intent_missing_key_gets_default(tmp_path):
 
     loaded = load_policy(path)
     assert loaded.intent.enabled is False
-    assert loaded.intent.timeout_seconds == 8
+    assert loaded.intent.timeout_seconds == 12
 
 
 def test_intent_versioning_meet():

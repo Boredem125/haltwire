@@ -41,7 +41,13 @@ def test_merge_preserves_existing_and_m1_hook(tmp_path):
 
     init(tmp_path, claude=True)
     pre = json.loads((claude_dir / "settings.local.json").read_text())["hooks"]["PreToolUse"]
-    cmds = [h["hooks"][0]["command"] for h in pre]
+    # Collect command strings: in exec form, the stub is in args; in shell form, in command
+    def _cmd_text(h):
+        hook = h["hooks"][0]
+        parts = [hook.get("command", "")]
+        parts.extend(hook.get("args") or [])
+        return " ".join(parts)
+    cmds = [_cmd_text(h) for h in pre]
     assert any("sandbox_hook.py" in c for c in cmds)  # M1 entry survives
     assert any("echo other" in c for c in cmds)        # unrelated entry survives
     assert any("pretooluse.py" in c for c in cmds)     # connector entry added

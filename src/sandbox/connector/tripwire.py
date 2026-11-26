@@ -447,11 +447,14 @@ def quarantine(layout, session_id: str, trip: dict[str, Any]) -> dict[str, Any]:
     if hasattr(layout, "state_dir"):
         qf = layout.state_dir / "quarantine.json"
         qf.parent.mkdir(parents=True, exist_ok=True)
+        _trigger_path = trip.get("path", "") or trip.get("canary_name", "")
         qf.write_text(json.dumps({
             "reason": "tripwire_stop",
             "session_id": session_id,
             "stopped_at": record["stopped_at"],
             "trip_kind": record["trip_kind"],
+            "since": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "trigger": _trigger_path,
         }), encoding="utf-8")
 
     # Sign via sign_record (reuse connector signing)

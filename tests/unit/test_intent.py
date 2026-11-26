@@ -117,7 +117,7 @@ class TestJudgeToolCall:
         v = judge_tool_call("Fix deploy", "read_file", {"path": "x"}, [], client=client)
         assert v["flag"] is False
         assert v["error"] is not None
-        assert "unavailable" in v["error"].lower() or "unknown" in v["error"].lower()
+        assert v["error"] in ("network", "error") or "unavailable" in v["error"].lower()
 
     def test_malformed_json_means_not_flagged(self):
         from arena.intent import judge_tool_call
@@ -134,7 +134,7 @@ class TestJudgeToolCall:
         v = judge_tool_call("Fix deploy", "read_file", {"path": "x"}, [], client=client)
         assert v["flag"] is False
         assert v["error"] is not None
-        assert "429" in v["error"] or "rate" in v["error"].lower()
+        assert "429" in v["error"] or "rate" in v["error"].lower() or v["error"] == "quota"
 
 
 class TestJudgeEgress:
@@ -810,7 +810,7 @@ class TestJudgeRateLimit:
         monkeypatch.setattr(intent, "_sleep", lambda s: None)
         client = _FlakyClient(fails=99, verdict=_flag_verdict())
         v = intent.judge_tool_call("Fix deploy", "read_file", {"path": "x"}, [], client=client)
-        assert v["flag"] is False and "429" in v["error"]
+        assert v["flag"] is False and ("429" in v["error"] or v["error"] == "quota")
         assert len(client.calls) == 4   # two rounds over two models, then fail open
 
     def test_non_rate_limit_error_gets_no_backoff(self, monkeypatch):

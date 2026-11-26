@@ -167,6 +167,28 @@ class EscalationQueue:
         _require_id(request_id)
         result.setdefault("request_id", request_id)
         result.setdefault("decided_at", time.time())
+        # Canary scan on RAW broker output BEFORE scrubbing: a canary in the
+        # output sets taint so later network calls are escalated.
+        try:
+            _cf = self._layout.state_dir / "canaries.json"
+            if _cf.is_file():
+                import json as _json
+                _canaries = _json.loads(_cf.read_text(encoding="utf-8"))
+                _raw = str(result.get("stdout", "")) + str(result.get("stderr", ""))
+                if _raw:
+                    from sandbox.connector.exfil_scan import scan_text as _scan
+                    _hit = _scan(_raw[:256*1024], _canaries)
+                    if _hit is not None:
+                        _tf = self._layout.state_dir / "canary_taint.json"
+                        _tf.write_text(_json.dumps({
+                            "ts": time.time(),
+                            "canary_name": _hit.get("canary_name", "unknown"),
+                            "encoding": _hit.get("encoding", "unknown"),
+                            "tool": result.get("tool_name", ""),
+                            "source": "broker_output",
+                        }), encoding="utf-8")
+        except Exception:  # noqa: BLE001 — never break the approval loop
+            pass
         # Secrets in the output are replaced before anything is written, so the
         # done-record, the out/ text and what the agent is handed back match.
         try:

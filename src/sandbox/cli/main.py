@@ -31,7 +31,16 @@ def _fix_stdio_encoding() -> None:
 _fix_stdio_encoding()
 
 
+def _get_version() -> str:
+    try:
+        from importlib.metadata import version
+        return version("haltwire")
+    except Exception:
+        return "0.0.0-dev"
+
+
 @click.group()
+@click.version_option(version=_get_version(), prog_name="haltwire")
 def cli() -> None:
     """AI Agent Sandbox Security System — CLI management."""
     pass
@@ -51,6 +60,11 @@ _register_sync(cli)
 from sandbox.cli.change_cmds import register as _register_change
 
 _register_change(cli)
+
+# AI intent judge commands (ai on / off / status).
+from sandbox.cli.ai_cmds import register as _register_ai
+
+_register_ai(cli)
 
 
 @cli.command()

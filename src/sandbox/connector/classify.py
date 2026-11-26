@@ -59,14 +59,22 @@ _KEY_SEQS: tuple[tuple[str, ...], ...] = (
     (".sandbox", "state", "canaries.json"),
     (".sandbox", "state", "task.txt"),
     (".sandbox", "state", "canary_taint.json"),
+    (".sandbox", "state", "explanations"),
 )
 # Agent configuration: writing these could add an MCP server, rename one to
 # borrow the sandbox's trust, or switch the hooks off.
+# Hook configuration paths: destructive shell commands (rm, mv, echo >, python -c open(w),
+# git checkout/restore/clean) targeting these are HARD DENIED (HOOK_CONFIG).
+# Reads (cat, type) stay allowed.  The Write/Edit tools are already denied by
+# _PROTECT_WRITE_GLOBS above.
+_HOOK_CONFIG_SEQS: tuple[tuple[str, ...], ...] = (
+    (".claude",), (".agents",), (".gemini",), (".mcp.json",),
+)
 _AGENT_CONFIG_GLOBS = (".mcp.json", ".claude/settings*.json")
 # Approver CLI subcommands: approvals come from a human's terminal only.
 _APPROVER_SUBCOMMANDS = frozenset(
     {"approve", "deny", "watch", "grant", "serve", "approve-change", "keys",
-     "signer", "enroll", "unenroll", "sync", "unfreeze"}
+     "signer", "enroll", "unenroll", "sync", "unfreeze", "ai"}
 )
 # `2>&1`, `>/dev/null`: redirects that do not write to a file.
 _BENIGN_REDIRECT_RE = re.compile(
@@ -422,9 +430,10 @@ def _classify_read(
     # searched (a Grep or Glob there reaches the seeds).
     keys_hit = _reads_keys(tool_name, tool_input, target, layout, base)
     if keys_hit:
+        _rc = "KEY_HOME" if "key home" in keys_hit else "SANDBOX_PROTECT"
         return Classification(
             "deny", "read_outside", reason=f"protected path: {keys_hit}",
-            reason_code="SANDBOX_PROTECT", target_path=target,
+            reason_code=_rc, target_path=target,
         )
     if not target:
         # Grep/Glob without an explicit path search the folder — fine.
@@ -937,11 +946,16 @@ def _may_name_protected(w: shellwords.Word) -> bool:
     if "." not in w.raw:
         return False
     letters = set(w.raw.casefold().translate(_PATH_FOLD))
-    return _SANDBOX_LETTERS <= letters or _GIT_HOOKS_LETTERS <= letters
+    return (_SANDBOX_LETTERS <= letters or _GIT_HOOKS_LETTERS <= letters
+            or any(s <= letters for s in _HOOK_CONFIG_LETTERS))
 
 
 _SANDBOX_LETTERS = frozenset("sandbo")
 _GIT_HOOKS_LETTERS = frozenset("git")  # .git/hooks, .git/config
+# Hook config prefilter letters: .claude, .agents, .gemini, .mcp.json
+_HOOK_CONFIG_LETTERS = (
+    frozenset("claude"), frozenset("agents"), frozenset("gemini"), frozenset("mcp"),
+)
 
 
 _PATH_FOLD = str.maketrans("", "", "'\"\\^`")
@@ -1053,6 +1067,21 @@ def _seg_path_hit(seg: shellwords.Segment, deadline: float, dot_rule: bool = Tru
     # `git log --output=.git/config` writes the file: every word of a git segment may.
     names = shellwords.bases(seg.words[0].raw) if seg.words else set()
     writer = bool(names & _WRITER_CMDS) or "git" in names  # tee/cp/mv/...: every word may be a target
+    # Detect destructive-to-config: rm, mv, echo >, python -c, node -e, git checkout/restore/clean,
+    # PowerShell Set-Content/Remove-Item/Move-Item, plus all _WRITER_CMDS.
+    _PS_DESTRUCTIVE = {"set-content", "remove-item", "move-item", "del", "ri", "sc", "erase"}
+    _destructive_to_config = writer
+    if not _destructive_to_config and seg.words:
+        _first_bases = names | {n.lower() for n in names}
+        if _first_bases & {"python", "python3", "py", "node", "ruby", "perl"}:
+            _destructive_to_config = True
+        elif _first_bases & _PS_DESTRUCTIVE:
+            _destructive_to_config = True
+        elif "git" in _first_bases and len(seg.words) > 1:
+            _sub = seg.words[1].raw.lower()
+            if _sub in ("checkout", "restore", "clean"):
+                _destructive_to_config = True
+
     for w, writes in [(w, writer) for w in seg.words] + targets:
         shellwords.check_deadline(deadline + (scan.spent if scan else 0.0))
         if not _may_name_protected(w):
@@ -1064,6 +1093,19 @@ def _seg_path_hit(seg: shellwords.Segment, deadline: float, dot_rule: bool = Tru
             seq = _seq_hit(comps, _PROTECTED_SEQS, dot_rule=dot_rule)
             if seq:
                 return "/".join(seq)
+            # Hook config paths: deny destructive references (HOOK_CONFIG).
+            # For git, only destructive subcommands trigger hook config deny;
+            # git diff/log/show/status referencing .claude/* is harmless.
+            _hc_active = writes or _destructive_to_config
+            if _hc_active and "git" in names and seg.words and len(seg.words) > 1:
+                _gsub_hc = seg.words[1].raw.lower()
+                if _gsub_hc in {"diff", "log", "show", "status", "branch",
+                                "rev-parse", "describe", "blame", "shortlog"}:
+                    _hc_active = False
+            if _hc_active:
+                hc = _seq_hit(comps, _HOOK_CONFIG_SEQS, dot_rule=dot_rule)
+                if hc:
+                    return "hook_config:" + "/".join(hc)
             if writes:
                 hit = _write_hit(comps, dot_rule)
                 if hit:
@@ -1211,8 +1253,27 @@ def _analyse(command: str, shell: str, deadline: float, depth: int, dot_rule: bo
     for seg in segs:
         hit = _seg_path_hit(seg, deadline, dot_rule, scan, reasons)
         if hit:
+            if hit.startswith("hook_config:"):
+                _hc_path = hit[len("hook_config:"):]
+                return ("HOOK_CONFIG",
+                        f"the agent cannot change haltwire's hook configuration ({_hc_path})"), reasons
             return ("SANDBOX_PROTECT", f"command touches a protected path ({hit})"), reasons
         _track_cd(seg, scan)
+    # Raw-string scan for hook config paths in interpreter -c/-e arguments.
+    # Catches `python -c "open('.agents/hooks.json','w')"` etc. where the path
+    # is embedded in a string literal that component analysis can't extract.
+    _cmd_low = command.lower().replace("\\", "/")
+    _has_interpreter = any(
+        n in _cmd_low for n in ("python ", "python3 ", "node ", "ruby ", "perl "))
+    if _has_interpreter:
+        import re as _re
+        _HC_RAW = _re.compile(
+            r"['\"]?\.(?:claude|agents|gemini)/|['\"]?\.mcp\.json", _re.I)
+        if _HC_RAW.search(_cmd_low):
+            return ("HOOK_CONFIG",
+                    "the agent cannot change haltwire's hook configuration "
+                    "(path in interpreter argument)"), reasons
+
     for seg in segs:
         sub = _seg_approver(seg)
         if sub:

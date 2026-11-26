@@ -158,12 +158,12 @@ def test_env_client_has_http_timeout(monkeypatch):
     assert client._timeout_ms == 12000
 
 
-def test_default_timeout_is_8000(monkeypatch):
-    """The default HTTP timeout is 8000 ms."""
+def test_default_timeout_is_12000(monkeypatch):
+    """The default HTTP timeout is 12000 ms (Gemini min 10s deadline)."""
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     ci._client_factory = None
     client = ci._make_client()
-    assert client._timeout_ms == 8000
+    assert client._timeout_ms == 12000
 
 
 def test_judge_passes_timeout_to_client(monkeypatch):

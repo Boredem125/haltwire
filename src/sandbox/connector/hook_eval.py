@@ -146,9 +146,11 @@ def _format_denied(rec: dict[str, Any]) -> str:
     )
 
 
-def _format_pending(request_id: str) -> str:
+def _format_pending(request_id: str, reason_code: str = "", detail: str = "") -> str:
+    prefix = f"SANDBOX [{reason_code}]: " if reason_code else "SANDBOX: "
+    detail_line = f" ({detail})" if detail else ""
     return (
-        f"SANDBOX: escalated as request {request_id} — no human decision yet. "
+        f"{prefix}escalated as request {request_id}{detail_line} — no human decision yet. "
         "Ask the user to approve it in their `sandbox watch` terminal, then "
         f'call the sandbox MCP tool check_request("{request_id}") to retrieve '
         "the output. Do not retry the command directly."
@@ -382,10 +384,12 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
                 "with an approver key to restore."
             ))
 
-    # Typosquat check: runs on shell tools before classify, so all agents
-    # (Claude Code, Antigravity, Gemini CLI) get it.  Hits escalate (single
-    # human approval), not hard deny.
+    # Typosquat check: runs on shell tools before classify, records the hit.
+    # The hit is applied after classify to override the reason, so the call
+    # goes through the normal escalation path (_escalate_shell) and appears
+    # in the approval queue.
     _typosquat_hit = None
+    _typosquat_reason = ""
     if tool_name in _SHELL_TOOLS:
         try:
             from sandbox.connector import typosquat as _typosquat
@@ -393,13 +397,7 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
             _ts_command = str(tool_input.get("command", ""))
             _typosquat_hit = _typosquat.check_command(_ts_command, cwd)
             if _typosquat_hit is not None:
-                _ts_why = _typosquat.reason(_typosquat_hit)
-                _audit(layout, session_id, {
-                    "event": "typosquat_escalated", "tool": tool_name,
-                    "reason_code": "TYPOSQUAT",
-                    "reason": _ts_why, "command": _ts_command,
-                })
-                return _pre_output("deny", f"SANDBOX DENIED {_ts_why}")
+                _typosquat_reason = _typosquat.reason(_typosquat_hit)
         except Exception as _ts_exc:  # noqa: BLE001
             _audit(layout, session_id, {
                 "event": "typosquat_error", "tool": tool_name,
@@ -445,6 +443,32 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
                     "canary_name": _tw_trip.get("canary_name"),
                 })
                 # F7: generic deny reason -- no canary name, encoding, or value
+                # Generate explanation_id and write it to quarantine.json
+                import secrets as _se
+                _tw_exp_id = f"tw-{_se.token_hex(4)}"
+                try:
+                    _qf_tw = layout.state_dir / "quarantine.json"
+                    if _qf_tw.is_file():
+                        _qd = json.loads(_qf_tw.read_text(encoding="utf-8"))
+                        _qd["explanation_id"] = _tw_exp_id
+                        _qf_tw.write_text(json.dumps(_qd), encoding="utf-8")
+                except Exception:  # noqa: BLE001
+                    pass
+                # Spawn Gemini explanation in the background
+                try:
+                    from sandbox.connector.explain import spawn_explanation as _spawn_exp
+                    _intent_pol_tw = getattr(policy, "intent", None)
+                    _spawn_exp(
+                        layout=layout, event_id=_tw_exp_id,
+                        kind="tripwire_stop", reason_code="TRIPWIRE",
+                        evidence=_tw_trip.get("evidence", ""),
+                        tool=tool_name, command=result.command if hasattr(result, 'command') else "",
+                        session_id=session_id,
+                        policy_intent_enabled=bool(getattr(_intent_pol_tw, "enabled", False)),
+                        canaries=_canaries,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
                 return _pre_output("deny", (
                     "SANDBOX DENIED [TRIPWIRE]: tripwire violation; "
                     "workspace frozen, a human must unfreeze. "
@@ -475,6 +499,44 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
         files = _written_this_session(layout, session_id)
         if files:
             result.reason += "; files written this session: " + ", ".join(files)
+
+    # Apply typosquat hit: override verdict to escalate with TYPOSQUAT reason.
+    # This goes through the normal _escalate_shell path so it appears in the
+    # approval queue and is visible to `haltwire watch`.
+    if _typosquat_hit is not None:
+        import secrets as _se
+        _ts_exp_id = f"ts-{_se.token_hex(4)}"
+        if result.verdict in ("allow", "observe", "escalate"):
+            # Raise-only: escalate, never lower a deny
+            result.verdict = "escalate"
+            result.trigger = "shell"
+            result.reason_code = "TYPOSQUAT"
+            result.reason = _typosquat_reason
+            result.metadata["_pending_detail"] = (
+                f"{_typosquat_hit.package} looks like {_typosquat_hit.looks_like}"
+            )
+            result.metadata["explanation_id"] = _ts_exp_id
+        _audit(layout, session_id, {
+            "event": "typosquat_escalated", "tool": tool_name,
+            "reason_code": "TYPOSQUAT",
+            "reason": _typosquat_reason,
+            "command": result.command,
+        })
+        # Spawn Gemini explanation
+        try:
+            from sandbox.connector.explain import spawn_explanation as _spawn_exp
+            _intent_pol_ts = getattr(policy, "intent", None)
+            _spawn_exp(
+                layout=layout, event_id=_ts_exp_id,
+                kind="typosquat_escalated", reason_code="TYPOSQUAT",
+                evidence=_typosquat_reason, tool=tool_name,
+                command=str(tool_input.get("command", "")),
+                session_id=session_id,
+                policy_intent_enabled=bool(getattr(_intent_pol_ts, "enabled", False)),
+                canaries=_canaries,
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     # F1 (N5) mcp_policy: when a bundle is enforced, MCP tool calls to a
     # server not in the enforced set are denied.  The enforced set is the
@@ -563,7 +625,14 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
             _intent_pol = getattr(policy, "intent", None)
             _intent_enabled = getattr(_intent_pol, "enabled", False) if _intent_pol else False
             _intent_timeout = min(getattr(_intent_pol, "timeout_seconds", 8), 20) if _intent_pol else 8
+            # Use the same key resolution as explain._get_key / aikey.get_key
             _has_key = bool(os.environ.get("GEMINI_API_KEY", "").strip())
+            if not _has_key:
+                try:
+                    from sandbox.connector.intent import _load_env_keys
+                    _has_key = bool(_load_env_keys())
+                except Exception:  # noqa: BLE001
+                    pass
             # Skip allowlisted read-only calls: verdict allow + ALLOW reason
             # (like git status, ls) but NOT writes or network tools
             _skip_judge = (result.verdict == "allow"
@@ -608,7 +677,7 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
 
                     _jt = _threading.Thread(target=_run_judge, daemon=True)
                     _jt.start()
-                    _jt.join(timeout=_intent_timeout)
+                    _jt.join(timeout=_intent_timeout + 1)  # +1 s slack for HTTP overhead
                     if _iv_box:
                         _iv = _iv_box[0]
                     else:
@@ -627,6 +696,9 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
                         result.reason = (
                             f"AI intent judge flagged this action: {_iv.get('reason', '')}"
                         )
+                        # B: store ai_reason/ai_confidence for the pending record
+                        result.metadata["ai_reason"] = _iv.get("reason", "")
+                        result.metadata["ai_confidence"] = _iv.get("confidence", 0.0)
                         _audit(layout, session_id, {
                             "event": "ai_flag", "tool": tool_name,
                             "reason_code": "AI_INTENT",
@@ -635,6 +707,23 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
                             "model": _iv.get("model"),
                             "identity": identity.to_dict() if identity else {},
                         })
+                        # Spawn Gemini explanation for the flag
+                        import secrets as _se
+                        _ai_exp_id = f"ai-{_se.token_hex(4)}"
+                        result.metadata["explanation_id"] = _ai_exp_id
+                        try:
+                            from sandbox.connector.explain import spawn_explanation as _spawn_exp
+                            _spawn_exp(
+                                layout=layout, event_id=_ai_exp_id,
+                                kind="ai_flag", reason_code="AI_INTENT",
+                                evidence=_iv.get("reason", ""),
+                                tool=tool_name, command=result.command or "",
+                                session_id=session_id,
+                                policy_intent_enabled=True,
+                                canaries=_canaries,
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
                 except Exception as _jg_exc:  # noqa: BLE001 — judge never breaks the hook
                     _audit(layout, session_id, {
                         "event": "judge_error", "tool": tool_name,
@@ -778,6 +867,22 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
                         "taint_info": _ct_taint_info,
                         "identity": identity.to_dict() if identity else {},
                     })
+                    # Spawn Gemini explanation
+                    try:
+                        from sandbox.connector.explain import spawn_explanation as _spawn_exp
+                        import secrets as _se
+                        _intent_pol_ct = getattr(policy, "intent", None)
+                        _spawn_exp(
+                            layout=layout, event_id=f"ct-{_se.token_hex(4)}",
+                            kind="canary_taint_denied", reason_code="CANARY_TAINT",
+                            evidence=_ct_taint_info, tool=tool_name,
+                            command=result.command or "",
+                            session_id=session_id,
+                            policy_intent_enabled=bool(getattr(_intent_pol_ct, "enabled", False)),
+                            canaries=_canaries,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
                     return _pre_output("deny", (
                         f"SANDBOX DENIED [CANARY_TAINT]: {_ct_taint_info}; "
                         "this call carries a payload to a non-allowlisted destination "
@@ -785,9 +890,12 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
                     ))
                 else:
                     # Escalate: set the result and let the normal flow handle it.
+                    import secrets as _se
+                    _ct_exp_id = f"ct-{_se.token_hex(4)}"
                     if result.verdict in ("allow", "observe"):
                         result.verdict = "escalate"
                     result.reason_code = "CANARY_TAINT"
+                    result.metadata["explanation_id"] = _ct_exp_id
                     result.reason = (
                         f"canary taint active ({_ct_taint_info}); "
                         "network access needs one human approval. "
@@ -861,8 +969,10 @@ async def pre_tool_use(payload: dict[str, Any], layout: FolderLayout) -> dict[st
     # Nor for a money-moving call under the floor (ADR 0008).
     # A workspace code runner is never upgraded by a remembered decision (ADR 0009): one
     # approval of the first test run would cover every later run of code the agent wrote.
+    _NEVER_REMEMBER = {"TYPOSQUAT", "AI_INTENT", "CANARY_TAINT", "EXFIL",
+                        "TRIPWIRE", "QUARANTINE", "WORKSPACE_RUNNER"}
     if (result.verdict == "escalate" and not result.requires_dual and not money_floor_hit
-            and result.reason_code != "WORKSPACE_RUNNER"
+            and result.reason_code not in _NEVER_REMEMBER
             and not _canary_tainted):
         memory = DecisionMemory(layout.remembered, session_id)
         remembered = memory.recall(
@@ -1389,6 +1499,13 @@ async def _escalate_shell(
         "execute_on_approve": True,
         "request_id": _hook_request_id,
         "bundle_sequence": _hook_bundle_seq,
+        # B: AI intent fields for the pending record (visible to watch)
+        **({"ai_reason": result.metadata["ai_reason"],
+            "ai_confidence": result.metadata["ai_confidence"]}
+           if "ai_reason" in result.metadata else {}),
+        # explanation_id for the TUI to link to the Gemini explanation file
+        **({"explanation_id": result.metadata["explanation_id"]}
+           if "explanation_id" in result.metadata else {}),
         # T12c: script content binding fields (ADR 0010 s9 9.2)
         "fp_v": 2,
         "script": _script_res.script,
@@ -1420,7 +1537,8 @@ async def _escalate_shell(
     done = await queue.wait(request_id, timeout=block_seconds)
 
     if done is None:
-        return _pre_output("deny", _format_pending(request_id))
+        _pd = result.metadata.get("_pending_detail", "")
+        return _pre_output("deny", _format_pending(request_id, result.reason_code, _pd))
 
     state = done.get("state") or done.get("decision")
     _audit(layout, session_id, {
@@ -1430,6 +1548,42 @@ async def _escalate_shell(
         "requires_dual": result.requires_dual,
     })
     if state in ("executed", "approved"):
+        # Bug 1: scan RAW broker output for canary values BEFORE scrubbing.
+        # PostToolUse never sees broker output; this is the only place to catch it.
+        _canaries_broker = None
+        _cf_broker = layout.state_dir / "canaries.json"
+        if _cf_broker.is_file():
+            try:
+                _canaries_broker = json.loads(_cf_broker.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                pass
+        if _canaries_broker is not None:
+            try:
+                _raw_out = str(done.get("stdout", "")) + str(done.get("stderr", ""))
+                if _raw_out:
+                    from sandbox.connector import exfil_scan as _escan_broker
+                    _broker_hit = _escan_broker.scan_text(_raw_out[:256*1024], _canaries_broker)
+                    if _broker_hit is not None:
+                        _taint_data = {
+                            "ts": time.time(),
+                            "canary_name": _broker_hit.get("canary_name", "unknown"),
+                            "encoding": _broker_hit.get("encoding", "unknown"),
+                            "tool": tool_name,
+                            "source": "broker_output",
+                        }
+                        try:
+                            _taint_file = layout.state_dir / "canary_taint.json"
+                            _taint_file.write_text(json.dumps(_taint_data), encoding="utf-8")
+                        except Exception:  # noqa: BLE001
+                            pass
+                        _audit(layout, session_id, {
+                            "event": "canary_taint", "tool": tool_name,
+                            "reason_code": "CANARY_TAINT",
+                            "source": "broker_output",
+                            "canary_name": _broker_hit.get("canary_name"),
+                        })
+            except Exception:  # noqa: BLE001
+                pass
         return _pre_output("deny", _format_approved(done))
     if state in ("denied",):
         return _pre_output("deny", _format_denied(done))

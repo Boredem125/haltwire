@@ -323,18 +323,23 @@ def semantic_clear_taint_cmd(path: str, reviewer: str, reason: str) -> None:
 @click.option("--claude/--no-claude", default=True, help="Merge Claude Code settings hook.")
 @click.option("--mcp/--no-mcp", default=True, help="Write .mcp.json for the MCP channel.")
 @click.option("--codex", is_flag=True, help="Print a Codex ~/.codex/config.toml snippet.")
+@click.option("--agy", is_flag=True, help="Write .agents/hooks.json for Antigravity (agy).")
+@click.option("--gemini", is_flag=True, help="Write .gemini/settings/hooks.json for Gemini CLI (experimental).")
 @click.option("--auto-allow", is_flag=True, help="Let the connector emit allow decisions (bypasses Claude Code's own prompt).")
 @click.option("--versioning/--no-versioning", default=True,
               help="Record the policy as the first approved version (change control and drift detection).")
 @click.option("--no-canaries", is_flag=True, help="Skip planting canary tripwire files.")
-def init_cmd(path: str, claude: bool, mcp: bool, codex: bool, auto_allow: bool, versioning: bool, no_canaries: bool) -> None:
+def init_cmd(path: str, claude: bool, mcp: bool, codex: bool, agy: bool, gemini: bool, auto_allow: bool, versioning: bool, no_canaries: bool) -> None:
     """Initialize the sandbox connector in a folder."""
+    import shutil as _shutil
+    from pathlib import Path as _Path
+
     from sandbox.connector.install import init_folder
 
     from sandbox.connector.install import InstallLayoutError
 
     try:
-        result = init_folder(path, claude=claude, mcp=mcp, codex=codex, auto_allow=auto_allow, no_canaries=no_canaries)
+        result = init_folder(path, claude=claude, mcp=mcp, codex=codex, agy=agy, gemini=gemini, auto_allow=auto_allow, no_canaries=no_canaries)
     except InstallLayoutError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -362,17 +367,91 @@ def init_cmd(path: str, claude: bool, mcp: bool, codex: bool, auto_allow: bool, 
         click.echo(f"  settings: {result['settings']}")
     if result["mcp_json"]:
         click.echo(f"  mcp:      {result['mcp_json']}")
+    import sys as _sys
+    if result.get("agy_hooks"):
+        click.echo(f"  agy:      {result['agy_hooks']}")
+        if " " in _sys.executable:
+            click.echo("  WARNING: interpreter path has spaces; if agy hooks fail, "
+                       "reinstall uv tools to a path without spaces.", err=True)
+    if result.get("gemini_hooks"):
+        click.echo(f"  gemini:   {result['gemini_hooks']}")
+        if " " in _sys.executable:
+            click.echo("  WARNING: interpreter path has spaces; if Gemini CLI hooks fail, "
+                       "reinstall uv tools to a path without spaces.", err=True)
     if result["codex_snippet"]:
         click.echo("\nAdd this to ~/.codex/config.toml:\n")
         click.echo(result["codex_snippet"])
     click.echo("\nNote: test and script runs (`python -m pytest`, `npm run`, `npm test`, ...) escalate by "
                "default, because they run code the agent can write. A team can opt in with an approved "
                "two-reviewer change to `shell.allow_runners` (ADR 0009).")
-    import sys as _sys
     _cli_name = _sys.argv[0].rsplit("/", 1)[-1].rsplit("\\", 1)[-1].split(".")[0] if _sys.argv else "sandbox"
     if _cli_name not in ("sandbox", "haltwire"):
         _cli_name = "haltwire"
     click.echo(f"\nRun `{_cli_name} watch` in another terminal to approve escalations.")
+
+    # Auto-detect hint for Antigravity/Gemini
+    if not agy:
+        _p = _Path(path)
+        if (_p / ".agents").is_dir() or _shutil.which("agy"):
+            click.echo(f"\nAntigravity detected: run `{_cli_name} init --agy` to protect it too.")
+
+
+def _doctor_hook_check(layout) -> None:
+    """Run the configured PreToolUse hook with a benign Read payload (exec form)."""
+    import json as _json
+    import subprocess as _sp
+
+    settings_data = None
+    for rel in (".claude/settings.local.json", ".claude/settings.json"):
+        p = layout.root / rel
+        if p.is_file():
+            try:
+                settings_data = _json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, _json.JSONDecodeError):
+                continue
+            break
+    if not settings_data:
+        click.echo("Hook check: no settings file found (skipped).")
+        return
+    pre_entries = settings_data.get("hooks", {}).get("PreToolUse", [])
+    our = [e for e in pre_entries if e.get("_sandbox_connector")]
+    if not our:
+        click.echo("Hook check: no connector PreToolUse hook (skipped).")
+        return
+    hook = our[0]["hooks"][0]
+    cmd = hook.get("command", "")
+    args = hook.get("args")
+    payload = _json.dumps({
+        "tool_name": "Read",
+        "tool_input": {"file_path": str(layout.root / "README.md")},
+        "cwd": str(layout.root),
+    })
+    try:
+        if args is not None:
+            # Exec form: command is the exe, args is the vector
+            proc = _sp.run(
+                [cmd, *args],
+                input=payload, capture_output=True, text=True, timeout=15,
+            )
+        else:
+            # Legacy shell form
+            proc = _sp.run(
+                cmd, input=payload, capture_output=True, text=True,
+                timeout=15, shell=True,
+            )
+        if proc.returncode == 0:
+            try:
+                out = _json.loads(proc.stdout)
+                if out.get("hookSpecificOutput", {}).get("hookEventName") == "PreToolUse":
+                    click.echo("Hook check: PreToolUse hook OK (exec form, benign Read).")
+                    return
+            except (_json.JSONDecodeError, ValueError):
+                pass
+        click.echo(f"Hook check: PreToolUse hook returned rc={proc.returncode}.", err=True)
+        if proc.stderr:
+            click.echo(f"  stderr: {proc.stderr[:200]}", err=True)
+    except Exception as exc:  # noqa: BLE001
+        click.echo(f"Hook check: PreToolUse hook failed: {exc}", err=True)
 
 
 @click.command("doctor")
@@ -412,6 +491,8 @@ def doctor_cmd(path: str) -> None:
     click.echo("OK: connector installed outside the governed folder; hook is isolated and fail-closed.")
     for n in notes:
         click.echo(n)
+    # Hook execution check: run the PreToolUse hook with a benign payload
+    _doctor_hook_check(layout)
 
 
 @click.command("status")
@@ -457,10 +538,24 @@ def status_cmd(path: str, as_json: bool) -> None:
     _canary_file = layout.state_dir / "canaries.json"
     canaries_active = _canary_file.is_file()
     canary_count = 0
+    canary_warnings: list[str] = []
     if canaries_active:
         try:
+            import hashlib as _hl
             _cdata = _json.loads(_canary_file.read_text(encoding="utf-8"))
-            canary_count = len(_cdata.get("_planted_hashes", {}))
+            _planted = _cdata.get("_planted_hashes", {})
+            canary_count = len(_planted)
+            if canary_count == 0:
+                canary_warnings.append("canaries enabled but 0 planted (tripwire inactive)")
+            else:
+                for _dp, _expected in _planted.items():
+                    _decoy = layout.root / _dp
+                    if not _decoy.is_file():
+                        canary_warnings.append(f"planted decoy missing: {_dp}")
+                    else:
+                        _actual = _hl.sha256(_decoy.read_bytes()).hexdigest()
+                        if _actual != _expected:
+                            canary_warnings.append(f"planted decoy modified: {_dp}")
         except Exception:  # noqa: BLE001
             pass
 
@@ -476,7 +571,7 @@ def status_cmd(path: str, as_json: bool) -> None:
             "frozen": quarantined,
             "frozen_reason": quarantine_reason,
             "frozen_kind": quarantine_kind if quarantined else "",
-            "canaries": {"active": canaries_active, "count": canary_count},
+            "canaries": {"active": canaries_active, "count": canary_count, "warnings": canary_warnings},
         }
         # T9a: additive top-level keys for managed workspaces
         if managed:
@@ -495,10 +590,46 @@ def status_cmd(path: str, as_json: bool) -> None:
     click.echo(f"Locked:   {'yes' if locked else 'no'}")
     if quarantined:
         click.echo(f"FROZEN:   yes ({quarantine_kind})")
+        # Show AI explanation: prefer explanation_id from quarantine.json,
+        # fall back to latest by mtime
+        _exp_dir = layout.state_dir / "explanations"
+        _exp_text = ""
+        if _exp_dir.is_dir():
+            _exp_id = ""
+            try:
+                _qd = _json.loads(_qf.read_text(encoding="utf-8"))
+                _exp_id = _qd.get("explanation_id", "")
+            except Exception:  # noqa: BLE001
+                pass
+            if _exp_id:
+                _ef_target = _exp_dir / f"{_exp_id}.json"
+                if _ef_target.is_file():
+                    try:
+                        _edata = _json.loads(_ef_target.read_text(encoding="utf-8"))
+                        _exp_text = _edata.get("text", "")
+                    except Exception:  # noqa: BLE001
+                        pass
+            # Fallback: latest by mtime
+            if not _exp_text:
+                _exp_files = sorted(_exp_dir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+                for _ef in _exp_files:
+                    if _ef.name.endswith(".req.json"):
+                        continue
+                    try:
+                        _edata = _json.loads(_ef.read_text(encoding="utf-8"))
+                        if _edata.get("text"):
+                            _exp_text = _edata["text"]
+                            break
+                    except Exception:  # noqa: BLE001
+                        pass
+            if _exp_text:
+                click.echo(f"Why (AI, advisory): {_exp_text[:200]}")
     if canaries_active:
         click.echo(f"Canaries: {canary_count} planted")
     else:
         click.echo("Canaries: disabled")
+    for _cw in canary_warnings:
+        click.echo(f"  WARNING: {_cw}")
     click.echo(f"Pending:  {len(pending)}")
     # T9a: load decision state for per-request refusals
     ds_entries = {}
@@ -980,9 +1111,39 @@ def deny_cmd(request_id: str, path: str, reason: str) -> None:
 @click.argument("path", default=".")
 @click.option("--reviewer", default=None,
               help="Reviewer id recorded on decisions (default: $SANDBOX_REVIEWER or your OS user).")
-@click.option("--once", is_flag=True, help="Drain the current queue and exit.")
-def watch_cmd(path: str, reviewer: str | None, once: bool) -> None:
-    """Interactively approve/deny escalations as they arrive."""
+@click.option("--once", is_flag=True, help="Drain the current queue and exit (plain mode only).")
+@click.option("--plain", is_flag=True, help="Use the original text-only loop instead of the TUI dashboard.")
+def watch_cmd(path: str, reviewer: str | None, once: bool, plain: bool) -> None:
+    """Interactively approve/deny escalations as they arrive.
+
+    By default launches a Textual terminal dashboard.
+    Use --plain for the original text loop (or when stdin is not a TTY).
+    """
+    import sys
+
+    # Auto-fallback to plain mode when not a TTY
+    if not plain and not (hasattr(sys.stdout, "isatty") and sys.stdout.isatty()):
+        plain = True
+
+    if not plain:
+        try:
+            # Detect and set the colour system BEFORE textual caches it.
+            from sandbox.tui.app import ensure_color_system
+            ensure_color_system()
+            from sandbox.tui.app import HaltwireApp
+        except ImportError:
+            click.echo("textual is not installed; falling back to --plain mode.")
+            plain = True
+
+    if plain:
+        _watch_plain(path, reviewer, once)
+    else:
+        app = HaltwireApp(watch_path=path, reviewer=reviewer)
+        app.run()
+
+
+def _watch_plain(path: str, reviewer: str | None, once: bool) -> None:
+    """The original text-only watch loop (kept for --plain)."""
     import asyncio
     import time
 

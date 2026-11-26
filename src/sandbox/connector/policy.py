@@ -20,7 +20,8 @@ VERDICTS = ("allow", "observe", "escalate", "deny")
 
 # Non-removable protections re-injected on every load.
 _PROTECT_WRITE_GLOBS = (".sandbox/**", ".git/**", ".mcp.json", ".claude/settings*.json",
-                        "**/.mcp.json", "**/.claude/settings*.json")
+                        "**/.mcp.json", "**/.claude/settings*.json",
+                        ".agents/**", ".gemini/**")
 _PROTECT_SHELL_PATTERNS = (r"\.sandbox",)
 
 
@@ -280,7 +281,7 @@ class IntentPolicy(BaseModel):
     """
 
     enabled: bool = False
-    timeout_seconds: int = Field(8, ge=1, le=20)
+    timeout_seconds: int = Field(12, ge=10, le=20)
 
     @field_validator("timeout_seconds", mode="before")
     @classmethod
@@ -288,8 +289,8 @@ class IntentPolicy(BaseModel):
         try:
             val = int(v)  # type: ignore[arg-type]
         except (TypeError, ValueError):
-            return 8
-        return max(1, min(20, val))
+            return 12
+        return max(10, min(20, val))
 
 
 class KeysPolicy(BaseModel):

@@ -32,7 +32,7 @@ def workspace(tmp_path):
     policy.escalation_timeout_seconds = 2
     # Enable intent judge
     pdata = policy.model_dump()
-    pdata["intent"] = {"enabled": True, "timeout_seconds": 2}
+    pdata["intent"] = {"enabled": True, "timeout_seconds": 10}
     lo.policy_file.write_text(json.dumps(pdata), encoding="utf-8")
     lo.session_file.write_text(
         json.dumps({"session_id": "s-subproc"}), encoding="utf-8"
@@ -78,13 +78,13 @@ sys.stdout.flush()
     t0 = time.monotonic()
     proc = subprocess.run(
         [sys.executable, "-c", script],
-        capture_output=True, text=True, timeout=15,
+        capture_output=True, text=True, timeout=20,
         env={**os.environ},
     )
     elapsed = time.monotonic() - t0
 
-    # Must exit within budget (2s timeout + margin, not 60s)
-    assert elapsed < 8, f"process took {elapsed:.1f}s, expected < 8s"
+    # Must exit within budget (10s timeout + 1s slack + margin, not 60s)
+    assert elapsed < 16, f"process took {elapsed:.1f}s, expected < 16s"
     assert proc.returncode == 0, f"rc={proc.returncode} stderr={proc.stderr[:500]}"
 
     # Parse the output

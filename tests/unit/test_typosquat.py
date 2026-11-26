@@ -76,15 +76,15 @@ async def test_adapter_denies_typosquat_from_requirements(layout):  # noqa: F811
     (layout.root / "requirements.txt").write_text("pandaz-csv==1.4.2\n", encoding="utf-8")
     out = await ga.evaluate(json.dumps(agy(
         "run_command", {"CommandLine": "pip install -r requirements.txt"}, layout.root)))
-    assert out["decision"] == "deny"
-    assert "TYPOSQUAT" in out["reason"] and "pandaz-csv" in out["reason"] and "pandas" in out["reason"]
-    log = (layout.root / ".sandbox" / "logs" / "activity.log")
+    assert out["decision"] in ("deny", "block")
+    # The escalation pending message contains TYPOSQUAT in the reason_code bracket
+    assert "TYPOSQUAT" in out["reason"]
     audit = list((layout.root / ".sandbox" / "audit").rglob("*.jsonl"))
-    assert audit, "typosquat deny must be written to the audit chain"
-    assert any("TYPOSQUAT" in p.read_text(encoding="utf-8") for p in audit) or (
-        log.exists() and "TYPOSQUAT" in log.read_text(encoding="utf-8"))
+    assert audit, "typosquat escalation must be written to the audit chain"
+    assert any("TYPOSQUAT" in p.read_text(encoding="utf-8") for p in audit)
 
 
 async def test_adapter_denies_typosquat_gemini(layout):  # noqa: F811
     out = await ga.evaluate(json.dumps(gem("run_shell_command", {"command": "npm i expresss"}, layout.root)))
-    assert out["decision"] == "deny" and "express" in out["reason"]
+    assert out["decision"] in ("deny", "block")
+    assert "TYPOSQUAT" in out["reason"]

@@ -802,9 +802,11 @@ class TestRealHookDeny:
         ws.mkdir()
         sb = ws / ".sandbox"
         sb.mkdir()
-        # Minimal policy.json so hook_eval doesn't blow up
+        # Minimal policy.json: short escalation timeout so typosquat
+        # escalations return quickly instead of hanging for 55 s.
         import json
         policy = {
+            "escalation_timeout_seconds": 2,
             "shell": {
                 "allow_patterns": [],
                 "deny_patterns": [],
@@ -815,6 +817,9 @@ class TestRealHookDeny:
             },
         }
         (sb / "policy.json").write_text(json.dumps(policy), encoding="utf-8")
+        # session.json needed by hook_eval
+        (sb / "state").mkdir(exist_ok=True)
+        (sb / "session.json").write_text(json.dumps({"session_id": "s-twa"}), encoding="utf-8")
         # Create the audit directory
         (sb / "audit").mkdir()
         return ws
@@ -832,14 +837,18 @@ class TestRealHookDeny:
 
     @pytest.mark.asyncio
     async def test_pip_install_typosquat_denied(self, sandbox_workspace):
-        """pip install pandaz-csv should be denied (TYPOSQUAT)."""
+        """pip install pandaz-csv should be denied (TYPOSQUAT).
+
+        Typosquat is now a real escalation: it goes to the approval queue
+        and times out to a deny with [TYPOSQUAT] in the reason.
+        """
         from arena.agent import _hook_check
 
         result = await _hook_check(
             "run_command", {"command": "pip install pandaz-csv"},
             sandbox_workspace, "test-session")
         assert result is not None, "Expected deny, got allow"
-        assert result["decision"] == "deny"
+        assert result["decision"] in ("deny", "block")
         assert "TYPOSQUAT" in result.get("reason", "").upper()
 
     @pytest.mark.asyncio

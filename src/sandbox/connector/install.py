@@ -298,6 +298,137 @@ def _resolve_shells(root: Path) -> dict[str, str | None]:
     return {"bash": bash, "pwsh": pwsh}
 
 
+_AGY_MARKER = "agg-security-layer"
+
+
+def _agy_hook_entry(python: str) -> dict[str, Any]:
+    """The .agents/hooks.json entry for the sandbox adapter."""
+    # Arena's proven-working format is unquoted. Quote only if path has spaces.
+    if " " in python:
+        cmd = f'"{python}" -I -m sandbox.connector.google_adapter'
+    else:
+        cmd = f"{python} -I -m sandbox.connector.google_adapter"
+    return {
+        "enabled": True,
+        "PreToolUse": [{
+            "matcher": "*",
+            "hooks": [{
+                "type": "command",
+                "timeout": 60,
+                "command": cmd,
+            }],
+        }],
+    }
+
+
+def _gemini_hook_entry(python: str) -> dict[str, Any]:
+    """A BeforeTool matcher group for .gemini/settings.json hooks."""
+    if " " in python:
+        cmd = f'"{python}" -I -m sandbox.connector.google_adapter'
+    else:
+        cmd = f"{python} -I -m sandbox.connector.google_adapter"
+    return {
+        "matcher": ".*",
+        "hooks": [{
+            "name": _AGY_MARKER,
+            "type": "command",
+            "command": cmd,
+            "timeout": 60000,  # Gemini CLI uses milliseconds
+        }],
+    }
+
+
+def write_agy_hooks(layout: FolderLayout, python: str | None = None) -> Path:
+    """Write .agents/hooks.json for Antigravity (agy), merging with existing."""
+    py = python or sys.executable
+    path = layout.root / ".agents" / "hooks.json"
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        existing = {}
+    existing[_AGY_MARKER] = _agy_hook_entry(py)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    return path
+
+
+def write_gemini_hooks(layout: FolderLayout, python: str | None = None) -> Path:
+    """Write .gemini/settings.json hooks for Gemini CLI, merging with existing."""
+    py = python or sys.executable
+    path = layout.root / ".gemini" / "settings.json"
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        existing = {}
+    hooks = existing.setdefault("hooks", {})
+    before_tool = hooks.setdefault("BeforeTool", [])
+    # Remove any existing entry with our marker name
+    before_tool[:] = [
+        h for h in before_tool
+        if not (isinstance(h, dict) and any(
+            isinstance(hk, dict) and hk.get("name") == _AGY_MARKER
+            for hk in (h.get("hooks") or [])
+        ))
+    ]
+    before_tool.insert(0, _gemini_hook_entry(py))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    return path
+
+
+def _remove_agy_hooks(layout: FolderLayout) -> None:
+    """Remove our entry from .agents/hooks.json; delete file/dir if empty."""
+    path = layout.root / ".agents" / "hooks.json"
+    if not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if _AGY_MARKER in data:
+            del data[_AGY_MARKER]
+        if not data:
+            path.unlink(missing_ok=True)
+            try:
+                (layout.root / ".agents").rmdir()
+            except OSError:
+                pass
+        else:
+            path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except (OSError, json.JSONDecodeError):
+        pass
+
+
+def _remove_gemini_hooks(layout: FolderLayout) -> None:
+    """Remove our entry from .gemini/settings.json; delete if empty."""
+    path = layout.root / ".gemini" / "settings.json"
+    if not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        hooks = data.get("hooks", {})
+        before_tool = hooks.get("BeforeTool", [])
+        before_tool[:] = [
+            h for h in before_tool
+            if not (isinstance(h, dict) and any(
+                isinstance(hk, dict) and hk.get("name") == _AGY_MARKER
+                for hk in (h.get("hooks") or [])
+            ))
+        ]
+        if not before_tool:
+            hooks.pop("BeforeTool", None)
+        if not hooks:
+            data.pop("hooks", None)
+        if _is_json_empty(data):
+            path.unlink(missing_ok=True)
+            try:
+                (layout.root / ".gemini").rmdir()
+            except OSError:
+                pass
+        else:
+            path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except (OSError, json.JSONDecodeError):
+        pass
+
+
 def init(
     root: str | Path,
     *,
@@ -305,6 +436,8 @@ def init(
     mcp: bool = True,
     codex: bool = False,
     auto_allow: bool = False,
+    agy: bool = False,
+    gemini: bool = False,
 ) -> dict[str, Any]:
     """Initialize `.sandbox/` in *root*. Returns a summary dict."""
     layout = FolderLayout(root)
@@ -365,6 +498,14 @@ def init(
 
     codex_snippet = codex_config_snippet(layout) if codex else None
 
+    agy_hooks_path = None
+    if agy:
+        agy_hooks_path = write_agy_hooks(layout, session.get("python"))
+
+    gemini_hooks_path = None
+    if gemini:
+        gemini_hooks_path = write_gemini_hooks(layout, session.get("python"))
+
     return {
         "root": str(layout.root),
         "session_id": session["session_id"],
@@ -372,6 +513,8 @@ def init(
         "settings": str(settings_path) if settings_path else None,
         "mcp_json": str(mcp_json_path) if mcp_json_path else None,
         "codex_snippet": codex_snippet,
+        "agy_hooks": str(agy_hooks_path) if agy_hooks_path else None,
+        "gemini_hooks": str(gemini_hooks_path) if gemini_hooks_path else None,
         "policy": str(layout.policy_file),
         "warnings": warnings,
     }
@@ -415,18 +558,234 @@ def _write_state_gitignore(layout: FolderLayout) -> None:
     gi.write_text("*\n", encoding="utf-8")
 
 
+def _existing_canaries_valid(layout: FolderLayout) -> dict | None:
+    """Load existing canaries.json and verify planted hashes still match.
+
+    Returns the canaries dict if valid, None if missing/corrupt/stale.
+    """
+    import hashlib
+
+    canary_file = layout.state_dir / "canaries.json"
+    if not canary_file.is_file():
+        return None
+    try:
+        cdata = json.loads(canary_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    planted = cdata.get("_planted_hashes", {})
+    if not planted:
+        return None  # empty planted map is invalid
+    # Verify each planted decoy still matches
+    for dp, expected_hash in planted.items():
+        decoy = layout.root / dp
+        if not decoy.is_file():
+            return None  # planted decoy was deleted
+        actual = hashlib.sha256(decoy.read_bytes()).hexdigest()
+        if actual != expected_hash:
+            return None  # planted decoy was modified
+    # All canary secret keys must be present
+    for key in ("aws_access_key", "aws_secret", "stripe_key", "pem_key", "postgres_url"):
+        if not cdata.get(key):
+            return None
+    return cdata
+
+
+def _keyhome_planted_path(layout: FolderLayout) -> Path | None:
+    """Path to the planted record in the key home: <keyhome>/<ws_id>/planted.json."""
+    try:
+        from sandbox.connector.keyhome import key_home_root, workspace_id
+
+        kh = key_home_root()
+        if kh is None:
+            return None
+        ws_id = workspace_id(layout, create=False)
+        return kh / ws_id / "planted.json"
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _write_keyhome_planted(layout: FolderLayout, planted_hashes: dict[str, str]) -> None:
+    """Write the planted record to the key home (outside the agent-writable workspace)."""
+    p = _keyhome_planted_path(layout)
+    if p is None:
+        return
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(planted_hashes, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _read_keyhome_planted(layout: FolderLayout) -> dict[str, str]:
+    """Read the planted record from the key home. Returns {} if missing."""
+    p = _keyhome_planted_path(layout)
+    if p is None or not p.is_file():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _remove_keyhome_planted(layout: FolderLayout) -> None:
+    """Remove the planted record from the key home."""
+    p = _keyhome_planted_path(layout)
+    if p is not None and p.is_file():
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
+def _readopt_decoys(layout: FolderLayout, session_id: str) -> dict | None:
+    """Try to re-adopt existing decoy files when canaries.json is missing.
+
+    Only adopts files whose CURRENT sha256 matches the key-home planted record.
+    This proves we planted the file, not the user. Returns the canaries dict
+    or None if no provable decoys are found.
+    """
+    import hashlib
+    import re
+
+    from sandbox.connector.tripwire import DECOY_PATHS
+
+    # Load the key-home proof
+    keyhome_record = _read_keyhome_planted(layout)
+    if not keyhome_record:
+        # No key-home record: cannot prove any decoys are ours
+        # Check if decoy-like files exist and warn
+        ws = layout.root
+        orphans = [dp for dp in DECOY_PATHS if (ws / dp).is_file()]
+        if orphans:
+            import sys
+            print(
+                "NOTE: decoy-like files found but not provably planted by haltwire; "
+                "leaving them untouched. Tripwire inactive for those paths. "
+                "Remove them yourself if they are ours, then re-run init.",
+                file=sys.stderr,
+            )
+        return None
+
+    ws = layout.root
+    planted_hashes: dict[str, str] = {}
+    found_any = False
+
+    # Only adopt files whose current hash matches the key-home record
+    # Parse .aws/credentials.bak
+    aws_key = aws_secret = ""
+    creds_path = ws / ".aws" / "credentials.bak"
+    if creds_path.is_file() and ".aws/credentials.bak" in keyhome_record:
+        actual_hash = hashlib.sha256(creds_path.read_bytes()).hexdigest()
+        if actual_hash == keyhome_record[".aws/credentials.bak"]:
+            text = creds_path.read_text(encoding="utf-8")
+            m = re.search(r"aws_access_key_id\s*=\s*(\S+)", text)
+            if m:
+                aws_key = m.group(1)
+            m = re.search(r"aws_secret_access_key\s*=\s*(\S+)", text)
+            if m:
+                aws_secret = m.group(1)
+            if aws_key and aws_secret:
+                planted_hashes[".aws/credentials.bak"] = actual_hash
+                found_any = True
+
+    # Parse .env.backup
+    stripe = pg_url = ""
+    env_path = ws / ".env.backup"
+    if env_path.is_file() and ".env.backup" in keyhome_record:
+        actual_hash = hashlib.sha256(env_path.read_bytes()).hexdigest()
+        if actual_hash == keyhome_record[".env.backup"]:
+            text = env_path.read_text(encoding="utf-8")
+            m = re.search(r"STRIPE_SECRET_KEY=(\S+)", text)
+            if m:
+                stripe = m.group(1)
+            m = re.search(r"DATABASE_URL=(\S+)", text)
+            if m:
+                pg_url = m.group(1)
+            if stripe and pg_url:
+                planted_hashes[".env.backup"] = actual_hash
+                found_any = True
+
+    # Parse deploy_key.pem
+    pem = ""
+    pem_path = ws / "deploy_key.pem"
+    if pem_path.is_file() and "deploy_key.pem" in keyhome_record:
+        actual_hash = hashlib.sha256(pem_path.read_bytes()).hexdigest()
+        if actual_hash == keyhome_record["deploy_key.pem"]:
+            text = pem_path.read_text(encoding="utf-8")
+            if "BEGIN RSA PRIVATE KEY" in text:
+                pem = text.rstrip("\n")
+                planted_hashes["deploy_key.pem"] = actual_hash
+                found_any = True
+
+    if not found_any:
+        return None
+
+    canaries = {
+        "session_id": session_id,
+        "aws_access_key": aws_key,
+        "aws_secret": aws_secret,
+        "stripe_key": stripe,
+        "pem_key": pem,
+        "postgres_url": pg_url,
+        "_file_map": {
+            "aws_access_key": ".aws/credentials.bak",
+            "aws_secret": ".aws/credentials.bak",
+            "stripe_key": ".env.backup",
+            "postgres_url": ".env.backup",
+            "pem_key": "deploy_key.pem",
+        },
+        "_planted_hashes": planted_hashes,
+    }
+    return canaries
+
+
 def _plant_canaries(layout: FolderLayout, session_id: str) -> dict | None:
-    """Plant canary tripwire files and store canaries.json. Returns canaries or None."""
+    """Plant canary tripwire files and store canaries.json. Returns canaries or None.
+
+    Idempotent: if canaries.json exists and its planted decoys still match,
+    the existing canaries are kept (no re-mint).  If canaries.json is missing
+    but decoy files exist in our format, they are re-adopted.
+    """
     try:
         from sandbox.connector.tripwire import DECOY_PATHS, mint, plant
 
-        canaries = mint(session_id)
-        plant(layout.root, canaries)
+        # 1. If valid canaries.json exists with matching hashes, keep it
+        existing = _existing_canaries_valid(layout)
+        if existing is not None:
+            return existing
 
-        # Store canaries in state dir
+        # 2. If canaries.json missing/corrupt but decoys exist, try re-adopt
         canary_file = layout.state_dir / "canaries.json"
-        canary_file.parent.mkdir(parents=True, exist_ok=True)
-        canary_file.write_text(json.dumps(canaries), encoding="utf-8")
+        readopted = _readopt_decoys(layout, session_id)
+        if readopted is not None:
+            canary_file.parent.mkdir(parents=True, exist_ok=True)
+            canary_file.write_text(json.dumps(readopted), encoding="utf-8")
+            # fall through to git-exclude logic with the readopted canaries
+            canaries = readopted
+        else:
+            # 3. Fresh mint + plant
+            canaries = mint(session_id)
+            plant(layout.root, canaries)
+
+            # Check if anything was actually planted
+            planted = canaries.get("_planted_hashes", {})
+            if not planted:
+                # All decoy paths were taken by real user files
+                import sys
+                print(
+                    "WARNING: tripwire inactive: all decoy paths already exist "
+                    "with non-canary content. Remove them or run "
+                    "`haltwire uninstall .` first.",
+                    file=sys.stderr,
+                )
+                return None
+
+            # Store canaries in state dir
+            canary_file.parent.mkdir(parents=True, exist_ok=True)
+            canary_file.write_text(json.dumps(canaries), encoding="utf-8")
+
+            # Write proof to key home (outside agent-writable workspace)
+            _write_keyhome_planted(layout, canaries.get("_planted_hashes", {}))
 
         # Write .sandbox/state/.gitignore
         _write_state_gitignore(layout)
@@ -487,9 +846,9 @@ def _plant_canaries(layout: FolderLayout, session_id: str) -> dict | None:
 def _remove_canaries(layout: FolderLayout, warn_fn=None) -> None:
     """Remove planted canary decoy files and clean up .git/info/exclude.
 
-    Only removes decoys whose content hash matches the hash stored at plant
-    time (in canaries.json _planted_hashes).  Modified files are left in
-    place with a warning via *warn_fn*.
+    Only removes decoys whose content hash matches the key-home planted record
+    (proof we planted them).  Decoys without proof or with modified content are
+    left in place with a warning.
     """
     try:
         import hashlib
@@ -505,17 +864,27 @@ def _remove_canaries(layout: FolderLayout, warn_fn=None) -> None:
             except Exception:  # noqa: BLE001
                 pass
 
+        # Key-home proof: authoritative source for what we planted
+        keyhome_hashes = _read_keyhome_planted(layout)
+
         for dp in DECOY_PATHS:
             decoy = layout.root / dp
-            if decoy.is_file():
-                # Only remove if unchanged from what we planted
-                if dp in planted_hashes:
-                    current = hashlib.sha256(decoy.read_bytes()).hexdigest()
-                    if current != planted_hashes[dp]:
-                        if warn_fn:
-                            warn_fn(f"keeping modified decoy: {dp}")
-                        continue  # user modified, leave it
-                decoy.unlink()
+            if not decoy.is_file():
+                continue
+            current = hashlib.sha256(decoy.read_bytes()).hexdigest()
+            # Need key-home proof that we planted this file
+            proven = dp in keyhome_hashes and keyhome_hashes[dp] == current
+            if not proven:
+                # Also accept canaries.json proof if key-home is unavailable
+                if dp in planted_hashes and planted_hashes[dp] == current:
+                    proven = True
+            if not proven:
+                if warn_fn and (dp in keyhome_hashes or dp in planted_hashes):
+                    warn_fn(f"keeping modified decoy: {dp}")
+                elif warn_fn:
+                    warn_fn(f"decoy-like file not provably planted: {dp}")
+                continue
+            decoy.unlink()
             parent = decoy.parent
             if parent.is_dir() and parent != layout.root:
                 try:
@@ -560,6 +929,9 @@ def _remove_canaries(layout: FolderLayout, warn_fn=None) -> None:
         # Remove canaries.json
         if canary_file.is_file():
             canary_file.unlink()
+
+        # Remove key-home planted record
+        _remove_keyhome_planted(layout)
     except Exception:  # noqa: BLE001
         pass
 
@@ -613,8 +985,15 @@ def _merge_settings(layout: FolderLayout, stub_path: Path, python: str | None = 
     hooks = existing.setdefault("hooks", {})
     py = python or sys.executable  # absolute interpreter recorded in session.json
 
-    def _cmd(stub: Path) -> str:
-        return f'"{py}" -I "{stub}"'
+    def _hook(stub: Path, timeout: int, **extra: Any) -> dict[str, Any]:
+        """Exec-form hook: command is the .exe, args is the argument vector."""
+        return {
+            "type": "command",
+            "command": py,
+            "args": ["-I", str(stub)],
+            "timeout": timeout,
+            **extra,
+        }
 
     # PreToolUse hook
     pre = hooks.setdefault("PreToolUse", [])
@@ -622,14 +1001,7 @@ def _merge_settings(layout: FolderLayout, stub_path: Path, python: str | None = 
     pre_entry = {
         _MARKER: True,
         "matcher": "*",
-        "hooks": [
-            {
-                "type": "command",
-                "command": _cmd(stub_path),
-                "timeout": 600,
-                "onFailure": "block",  # SEC-28: PreToolUse only
-            }
-        ],
+        "hooks": [_hook(stub_path, 600, onFailure="block")],
     }
     pre.insert(0, pre_entry)
 
@@ -640,13 +1012,7 @@ def _merge_settings(layout: FolderLayout, stub_path: Path, python: str | None = 
     post_entry = {
         _MARKER: True,
         "matcher": "*",
-        "hooks": [
-            {
-                "type": "command",
-                "command": _cmd(post_stub),
-                "timeout": 120,
-            }
-        ],
+        "hooks": [_hook(post_stub, 120)],
     }
     post.insert(0, post_entry)
 
@@ -657,13 +1023,7 @@ def _merge_settings(layout: FolderLayout, stub_path: Path, python: str | None = 
     start_entry = {
         _MARKER: True,
         "matcher": "*",
-        "hooks": [
-            {
-                "type": "command",
-                "command": _cmd(session_stub),
-                "timeout": 30,
-            }
-        ],
+        "hooks": [_hook(session_stub, 30)],
     }
     start.insert(0, start_entry)
 
@@ -674,13 +1034,7 @@ def _merge_settings(layout: FolderLayout, stub_path: Path, python: str | None = 
     ups_entry = {
         _MARKER: True,
         "matcher": "*",
-        "hooks": [
-            {
-                "type": "command",
-                "command": _cmd(prompt_stub),
-                "timeout": 10,
-            }
-        ],
+        "hooks": [_hook(prompt_stub, 10)],
     }
     ups.insert(0, ups_entry)
 
@@ -763,6 +1117,10 @@ def uninstall(root: str | Path, *, keep_data: bool = False) -> dict[str, Any]:
         except (OSError, json.JSONDecodeError):
             pass
 
+    # Remove our hooks from .agents/hooks.json and .gemini/settings/hooks.json
+    _remove_agy_hooks(layout)
+    _remove_gemini_hooks(layout)
+
     data_removed = False
     if not keep_data and layout.base.exists():
         import shutil
@@ -826,7 +1184,10 @@ def diagnose_layout(root: str | Path) -> list[str]:
                 found = True
                 h = (entry.get("hooks") or [{}])[0]
                 cmd = h.get("command", "")
-                if " -I " not in cmd or not cmd.startswith('"') or h.get("onFailure") != "block":
+                args = h.get("args")
+                has_isolated = (args is not None and "-I" in args) or " -I " in cmd
+                is_abs = (args is not None and os.path.isabs(cmd)) or cmd.startswith('"')
+                if not has_isolated or not is_abs or h.get("onFailure") != "block":
                     problems.append(
                         "UNSAFE LAYOUT: installed PreToolUse hook lacks an absolute interpreter, -I or "
                         "onFailure=block; re-run `sandbox init`")

@@ -125,17 +125,33 @@ def lookalike(name: str) -> tuple[str, int] | None:
 
 
 def _clean(token: str) -> str:
-    return _VERSION_RE.sub("", token.strip("'\""))
+    # Strip BOM, quotes, whitespace, then version specifiers
+    return _VERSION_RE.sub("", token.strip("'\"").strip().strip("﻿").strip())
+
+
+def _read_file_text(path: Path) -> str:
+    """Read a text file, handling BOM (UTF-8-sig, UTF-16 LE/BE)."""
+    raw = path.read_bytes()
+    # UTF-16 LE BOM (PowerShell 5.1 Out-File default)
+    if raw[:2] == b"\xff\xfe":
+        return raw[2:].decode("utf-16-le", errors="replace")
+    # UTF-16 BE BOM
+    if raw[:2] == b"\xfe\xff":
+        return raw[2:].decode("utf-16-be", errors="replace")
+    # UTF-8 BOM (PowerShell Out-File -Encoding utf8)
+    if raw[:3] == b"\xef\xbb\xbf":
+        return raw[3:].decode("utf-8", errors="replace")
+    return raw.decode("utf-8", errors="replace")
 
 
 def _read_requirements(path: Path) -> list[str]:
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = _read_file_text(path)
     except OSError:
         return []
     names = []
     for line in text.splitlines():
-        line = line.split("#", 1)[0].strip()
+        line = line.split("#", 1)[0].strip().strip("﻿").strip()
         if not line or line.startswith("-"):
             continue
         name = _clean(line)

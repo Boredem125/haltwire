@@ -158,6 +158,47 @@ Full technical reference: [docs/CONNECTOR.md](docs/CONNECTOR.md)
 
 ---
 
+## Turn on the Gemini judge
+
+The AI intent judge uses Gemini to flag suspicious tool calls. It only ever
+**adds scrutiny** (escalate), never allows. It is off by default.
+
+1. Set your Gemini API key before starting the agent:
+
+   **PowerShell:**
+   ```powershell
+   $env:GEMINI_API_KEY="your-key-here"
+   ```
+
+   **Bash:**
+   ```bash
+   export GEMINI_API_KEY="your-key-here"
+   ```
+
+   Or press `k` in `haltwire watch` to set the key interactively.
+
+2. Enable the judge:
+
+   ```bash
+   haltwire ai on
+   ```
+
+3. Check the status:
+
+   ```bash
+   haltwire ai status
+   ```
+
+**What it does:** When enabled, the judge reviews shell, write, and network
+tool calls. If it flags one, the call is escalated to a human. On timeout or
+error, the judge adds nothing (the deterministic rules still protect).
+
+**Privacy:** Secrets (API keys, passwords, private keys) are scrubbed from the
+prompt before anything is sent to Google. Canary values are masked. The judge
+never sees raw credentials.
+
+---
+
 ## Frozen? How to unfreeze
 
 If the sandbox detects a tripwire violation (the agent accessed a planted canary

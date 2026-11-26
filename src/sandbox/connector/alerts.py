@@ -50,6 +50,7 @@ _ALWAYS = {
     # Tripwire and AI intent judge alerts.
     "tripwire_stop": "tripwire_stop",
     "ai_flag": "ai_flag",
+    "ai_explanation": "ai_explanation",
 }
 # Escalations alert only when critical or dual control.
 _ESCALATIONS = {"shell_escalated", "tool_call_escalated", "escalate_redirect"}

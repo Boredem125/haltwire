@@ -167,7 +167,7 @@ def _safe_verdict(error: str, latency_ms: int = 0) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _load_env_keys() -> list[str]:
-    """Load GEMINI_API_KEY, GEMINI_API_KEY1, GEMINI_API_KEY2, ... from env."""
+    """Load GEMINI_API_KEY, GEMINI_API_KEY1, ... from env, then aikey store."""
     keys = []
     primary = os.environ.get("GEMINI_API_KEY", "").strip()
     if primary:
@@ -176,16 +176,26 @@ def _load_env_keys() -> list[str]:
         k = os.environ.get(f"GEMINI_API_KEY{i}", "").strip()
         if k:
             keys.append(k)
+    # Fallback: per-user key store (aikey.py, built by install worker)
+    if not keys:
+        try:
+            from sandbox.connector.aikey import get_key
+            ak = get_key()
+            if ak:
+                keys.append(ak)
+        except (ImportError, Exception):  # noqa: BLE001
+            pass
     return keys
 
 
 class _EnvKeyRotatingClient:
     """A simple key-rotating genai client wrapper."""
 
-    def __init__(self, keys: list[str], timeout_ms: int = 8000):
+    def __init__(self, keys: list[str], timeout_ms: int = 12000):
         self._keys = keys
         self._idx = 0
-        self._timeout_ms = timeout_ms
+        # Gemini requires minimum 10 s deadline; never go below
+        self._timeout_ms = max(timeout_ms, 10000)
 
     @property
     def models(self):
@@ -241,7 +251,7 @@ def set_client_factory(factory) -> None:
     _client_factory = factory
 
 
-def _make_client(client: Any = None, timeout_ms: int = 8000) -> Any:
+def _make_client(client: Any = None, timeout_ms: int = 12000) -> Any:
     """Judge client: env-based key rotation, reversed order from agent.
 
     If a custom factory has been set via set_client_factory, it is used
@@ -413,14 +423,28 @@ def judge_tool_call(
 
     except Exception as exc:  # noqa: BLE001
         latency = int((time.monotonic() - t0) * 1000)
-        category = "unknown error"
-        detail = str(exc)
-        if "429" in detail or "RESOURCE_EXHAUSTED" in detail:
-            category = "rate limited (429)"
-        elif "503" in detail or "unavailable" in detail.lower():
-            category = "model unavailable (503)"
-        elif "timeout" in type(exc).__name__.lower() or "timed out" in detail.lower():
+        # Safe error category: NEVER include the key or full exception text
+        detail = str(exc).lower()
+        exc_name = type(exc).__name__.lower()
+        # 400 INVALID_ARGUMENT (config issue, e.g. deadline too short) must
+        # come before the timeout check so "deadline" in a 400 message
+        # doesn't get misclassified as a real timeout.
+        if "400" in detail and "invalid_argument" in detail:
+            category = "config"
+        elif "429" in detail or "resource_exhausted" in detail:
+            category = "quota"
+        elif "401" in detail or "403" in detail or "unauthorized" in detail or "permission" in detail:
+            category = "auth"
+        elif "503" in detail or "unavailable" in detail:
+            category = "model"
+        elif "timeout" in exc_name or "timed out" in detail:
             category = "timeout"
+        elif "404" in detail or "not found" in detail:
+            category = "model"
+        elif "connect" in detail or "network" in detail or "dns" in detail:
+            category = "network"
+        else:
+            category = "error"
         return _safe_verdict(category, latency)
 
 
@@ -505,12 +529,22 @@ Respond with JSON: {"flag": true/false, "reason": "...", "confidence": 0.0-1.0}
 
     except Exception as exc:  # noqa: BLE001
         latency = int((time.monotonic() - t0) * 1000)
-        detail = str(exc)
-        category = "unknown error"
-        if "429" in detail or "RESOURCE_EXHAUSTED" in detail:
-            category = "rate limited (429)"
-        elif "503" in detail or "unavailable" in detail.lower():
-            category = "model unavailable (503)"
-        elif "timeout" in type(exc).__name__.lower() or "timed out" in detail.lower():
+        detail = str(exc).lower()
+        exc_name = type(exc).__name__.lower()
+        if "400" in detail and "invalid_argument" in detail:
+            category = "config"
+        elif "429" in detail or "resource_exhausted" in detail:
+            category = "quota"
+        elif "401" in detail or "403" in detail or "unauthorized" in detail:
+            category = "auth"
+        elif "503" in detail or "unavailable" in detail:
+            category = "model"
+        elif "timeout" in exc_name or "timed out" in detail:
             category = "timeout"
+        elif "404" in detail or "not found" in detail:
+            category = "model"
+        elif "connect" in detail or "network" in detail:
+            category = "network"
+        else:
+            category = "error"
         return _safe_verdict(category, latency)
