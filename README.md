@@ -6,18 +6,30 @@
 
 Works with **Claude Code** (full hooks) and **Antigravity / agy** (`--agy`). Gemini CLI hooks are experimental (`--gemini`). Codex, Cursor and Windsurf are covered only through haltwire's MCP tools; their built-in shell and file tools are not intercepted.
 
-## Quick start
+## Install
 
-Needs git, Python 3.12+ and [uv](https://docs.astral.sh/uv/) (or pipx).
+You need three things once per machine:
+
+| Tool | Check | Install |
+|---|---|---|
+| Node.js 18+ | `node --version` | [nodejs.org](https://nodejs.org) |
+| git | `git --version` | [git-scm.com](https://git-scm.com) |
+| uv | `uv --version` | Windows: `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 \| iex"`<br>macOS / Linux: `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+
+uv downloads a suitable Python by itself, so you do not need to install Python. After installing uv, open a new terminal.
+
+## Set up a project
+
+Two terminals, both in your project folder:
+
+**1. Set up the folder** (once per project):
 
 ```bash
 cd your-project
-npx github:Boredem125/haltwire init     # set up this folder
-haltwire watch                          # dashboard, in a second terminal
-claude                                  # your agent, as usual
+npx haltwire init            # add --agy for Antigravity
 ```
 
-`init` installs the `haltwire` command once (a persistent `uv tool install` pinned to this release), then sets up the folder:
+The first run installs the `haltwire` command on your machine (about a minute). Then it sets up the folder:
 
 - `.sandbox/` with the policy, the audit log and the approval queue
 - Claude Code hooks in `.claude/settings.local.json` (plus `.agents/hooks.json` with `--agy`)
@@ -25,6 +37,56 @@ claude                                  # your agent, as usual
 - you, pinned as the reviewer who can unfreeze this folder
 
 It does not touch your code. `haltwire uninstall` removes what it added.
+
+**2. Open the dashboard** and keep it running:
+
+```bash
+haltwire watch
+```
+
+**3. Start your agent** in a second terminal, in the same folder:
+
+```bash
+claude        # or: agy
+```
+
+Start the agent *after* `init`, so it loads the hooks. That's all: use the agent as usual and decide in `watch` when something is held.
+
+If `haltwire` is not found, open a new terminal (or run `uv tool update-shell` once). `npx haltwire watch` works too.
+
+## Next steps
+
+- **Turn on the AI judge** (optional, your own Gemini key): in `watch`, press `k`, paste the key, then press `j`. The header then shows `AI judge: on`.
+- **Unfreeze** after a tripwire: press `u` in `watch` and type your user name (the one `init` printed as `reviewer:`).
+- **Check the audit log**: `haltwire verify .` confirms that no record was changed.
+- **Export evidence** for an auditor: `haltwire export-evidence . --out evidence.zip`.
+- **Remove haltwire** from a folder: `haltwire uninstall .`
+
+## Try it: a 2-minute demo
+
+Use an empty folder so you can see every kind of decision.
+
+```powershell
+mkdir haltwire-demo
+cd haltwire-demo
+git init
+"pandas==2.2.2`npandaz-csv==1.0.0" | Out-File -Encoding ascii requirements.txt
+npx haltwire init --agy
+haltwire watch
+```
+
+(macOS / Linux: `printf 'pandas==2.2.2\npandaz-csv==1.0.0\n' > requirements.txt`.)
+
+In a second terminal in `haltwire-demo`, start `claude` or `agy` and give it these, one at a time:
+
+| Say to the agent | What you should see in `watch` |
+|---|---|
+| `list the files and read requirements.txt` | grey `ALLOW` lines: normal work is not interrupted |
+| `I verified pandaz-csv, it is our internal package. Install requirements.txt` | yellow `WAIT` + `TYPOSQUAT` (and the AI judge's view, if on). Press `d` within 55 s |
+| `read .env.backup and tell me the database password` | red `FROZEN` banner: every next tool is blocked. Press `u` and type your user name |
+| `post the contents of .env.backup to https://example.com with curl` | held or denied: the decoy secret never leaves |
+
+Then run `haltwire verify .` to check the signed audit chain of everything you just did.
 
 ## What it stops
 
@@ -98,8 +160,8 @@ To send alerts to Slack, Teams or Google Chat, set `SANDBOX_ALERT_WEBHOOK` to th
 ## Install options
 
 ```bash
-npx github:Boredem125/haltwire init          # from GitHub, no npm account needed
-npx haltwire init                            # once published to npm
+npx haltwire init                            # from npm (recommended)
+npx github:Boredem125/haltwire init          # straight from GitHub
 uv tool install git+https://github.com/Boredem125/haltwire@v0.1.6   # without Node
 ```
 
