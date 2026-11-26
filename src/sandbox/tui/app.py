@@ -398,7 +398,7 @@ def _feed_target(ev: dict[str, Any]) -> str:
         return _safe(str(ev["command"]), 60)
     target = str(ev.get("target") or "")
     if target:
-        return _safe(Path(target).name or target, 60)
+        return _safe(Path(target.replace("\\", "/")).name or target, 60)
     if ev.get("host"):
         return _safe(str(ev["host"]), 60)
     return ""
