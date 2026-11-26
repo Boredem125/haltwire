@@ -100,7 +100,7 @@ To send alerts to Slack, Teams or Google Chat, set `SANDBOX_ALERT_WEBHOOK` to th
 ```bash
 npx github:Boredem125/haltwire init          # from GitHub, no npm account needed
 npx haltwire init                            # once published to npm
-uv tool install git+https://github.com/Boredem125/haltwire@v0.1.5   # without Node
+uv tool install git+https://github.com/Boredem125/haltwire@v0.1.6   # without Node
 ```
 
 The npx launcher is a small Node.js script with no dependencies. It finds `uv` (or `pipx`) and installs the Python package from the matching git tag. If neither is found, it prints the one-line install command for your OS. `--install-uv` lets it install uv for you (it asks first). `HALTWIRE_REF` overrides the git ref.
