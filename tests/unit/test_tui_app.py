@@ -11,6 +11,7 @@ _os.environ["TEXTUAL_COLOR_SYSTEM"] = "truecolor"
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from unittest import mock
@@ -347,7 +348,7 @@ class TestTuiApp:
             await pilot.pause()
             feed = app.query_one("#event-feed")
             text = feed.render().plain
-            assert "allowed" in text or "escalated" in text or "denied" in text
+            assert "ALLOW" in text or "DENY" in text or "WAIT" in text
 
     @pytest.mark.asyncio
     async def test_help_modal(self, sandbox_dir):
@@ -447,9 +448,10 @@ class TestFreshSubprocessColour:
         svg_path = str(_SHOT_DIR / "subprocess_colour.svg")
         _SHOT_DIR.mkdir(parents=True, exist_ok=True)
 
+        # Build PYTHONPATH so the subprocess can import sandbox.*
+        src_dir = str(Path(__file__).resolve().parents[2] / "src")
         script = f'''
 import asyncio, sys
-sys.path.insert(0, r"D:\\sast-call\\src")
 from sandbox.tui.app import HaltwireApp
 async def run():
     app = HaltwireApp(watch_path=r"{sandbox_dir}")
@@ -461,8 +463,11 @@ asyncio.run(run())
         env = dict(os.environ)
         env.pop("TEXTUAL_COLOR_SYSTEM", None)
         env["WT_SESSION"] = "test-session-guid"
+        # Prepend src/ to PYTHONPATH so the subprocess finds sandbox.*
+        existing_pp = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = src_dir + (os.pathsep + existing_pp if existing_pp else "")
         result = subprocess.run(
-            [r"D:\sast-call\.venv\Scripts\python.exe", "-c", script],
+            [sys.executable, "-c", script],
             capture_output=True, text=True, timeout=30, env=env,
         )
         assert result.returncode == 0, f"Subprocess failed: {result.stderr}"

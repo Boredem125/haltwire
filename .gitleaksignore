@@ -85,3 +85,10 @@ db545a5e9da1ffd8374502ed4c258514d648a2db:tests/unit/test_advreview_round2.py:str
 # (now sanitized in the working tree; these cover the historical commit).
 db545a5e9da1ffd8374502ed4c258514d648a2db:.gitleaksignore:generic-api-key:60
 db545a5e9da1ffd8374502ed4c258514d648a2db:.gitleaksignore:stripe-access-token:69
+
+# -- Commit 79d3ffe (v0.1.3): test files with fake Google-API-key-shaped values --
+# test_aikey.py: fake test key for roundtrip/mask tests (now changed to non-key-shaped).
+79d3ffe862f87bca171fcd67d778bd067cc9377a:tests/unit/test_aikey.py:generic-api-key:57
+79d3ffe862f87bca171fcd67d778bd067cc9377a:tests/unit/test_aikey.py:generic-api-key:155
+# test_secfix_f7_f8.py: fake GEMINI_API_KEY env var for status display test.
+79d3ffe862f87bca171fcd67d778bd067cc9377a:tests/unit/test_secfix_f7_f8.py:generic-api-key:79

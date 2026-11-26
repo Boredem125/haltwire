@@ -145,19 +145,25 @@ def _secure_windows_acl(path: Path) -> None:
         if icacls is None:
             _log.warning("icacls not found; cannot set owner-only ACL on %s", path.name)
             return
-        username = os.environ.get("USERNAME", "")
-        if not username:
-            import getpass
-            username = getpass.getuser()
+        import getpass
+        import re as _re
+        username = getpass.getuser()
         if not username:
             _log.warning("cannot determine username; skipping ACL on %s", path.name)
+            return
+        # Strict validation: Windows usernames may contain letters, digits,
+        # dots, hyphens, underscores and spaces; reject anything else to
+        # prevent argument injection via a crafted USERNAME env var.
+        if not _re.fullmatch(r"[A-Za-z0-9.\-_ ]+", username):
+            _log.warning("username %r has unexpected characters; skipping ACL on %s",
+                         username, path.name)
             return
         # Remove inheritance, then grant only the current user full control.
         subprocess.run(
             [str(icacls), str(path), "/inheritance:r"],
             capture_output=True, timeout=10, check=False,
         )
-        subprocess.run(
+        subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args  -- username from getpass.getuser() validated against strict [A-Za-z0-9.\-_ ]+ pattern; icacls is from _validated_icacls()
             [str(icacls), str(path), "/grant:r", f"{username}:(F)"],
             capture_output=True, timeout=10, check=False,
         )
@@ -245,7 +251,8 @@ def test_key(key: str) -> str | None:
     except ImportError:
         return "google-genai is not installed"
     try:
-        http_opts = gtypes.HttpOptions(timeout=5000)
+        # Gemini rejects deadlines under 10 s (400 INVALID_ARGUMENT).
+        http_opts = gtypes.HttpOptions(timeout=12000)
         client = genai.Client(api_key=k, http_options=http_opts)
     except (ImportError, TypeError):
         try:

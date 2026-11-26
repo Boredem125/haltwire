@@ -76,7 +76,7 @@ def versioned_workspace(tmp_path):
 
 def test_ai_status_shows_key_source_env(versioned_workspace, monkeypatch):
     """ai status shows 'env' and masked key when GEMINI_API_KEY is set."""
-    monkeypatch.setenv("GEMINI_API_KEY", "AIzaSyB1234567890abcdefghij")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real-0000000000000000")
     from sandbox.cli.ai_cmds import ai_group
 
     runner = CliRunner()
@@ -85,10 +85,10 @@ def test_ai_status_shows_key_source_env(versioned_workspace, monkeypatch):
     out = r.output
     assert "env" in out.lower()
     # Must show masked key (first 4 + ... + last 4)
-    assert "AIza" in out
-    assert "ghij" in out
+    assert "test" in out
+    assert "0000" in out
     # Must NOT show the full key
-    assert "AIzaSyB1234567890abcdefghij" not in out
+    assert "test-key-not-real-0000000000000000" not in out
 
 
 def test_ai_status_shows_not_set(versioned_workspace, monkeypatch):

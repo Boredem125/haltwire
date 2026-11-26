@@ -54,7 +54,7 @@ class TestValidation:
 class TestSetGetClear:
     def test_roundtrip(self, tmp_keyhome):
         from sandbox.connector.aikey import clear_key, get_key, set_key
-        key = "AIzaSyD_test_1234567890abcdef"
+        key = "test-key-not-real-0000000000000000"
         set_key(key)
         assert get_key() == key
         clear_key()
@@ -152,7 +152,7 @@ class TestMask:
 
     def test_full_key_never_in_mask(self):
         from sandbox.connector.aikey import mask
-        key = "AIzaSyD_test_1234567890abcdef"
+        key = "test-key-not-real-0000000000000000"
         masked = mask(key)
         assert key not in masked
         assert len(masked) < len(key)

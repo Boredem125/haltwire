@@ -164,41 +164,61 @@ def _coloured_reason(code: str) -> str:
 
 
 def _event_colour(event: str) -> str:
-    """Rich colour name for an audit event type."""
+    """Rich colour hex for an audit event type (explicit hex for SVG fidelity)."""
     e = event.lower()
     if "quarantine" in e or "tripwire" in e:
-        return "bold red"
+        return "bold #ff4444"
     if "denied" in e or "deny" in e or "refused" in e:
-        return "red"
+        return "#ff4444"
     if "escalat" in e:
-        return "yellow"
+        return "#fdcb6e"
     if "approved" in e or "approve" in e:
-        return "green"
+        return "#00b894"
     if "unfreeze" in e:
-        return "cyan"
+        return "#0fbcf9"
     if e.startswith("ai_") or "intent" in e or "judge" in e:
         return "#a29bfe"
     if "allowed" in e or "allow" in e:
-        return "#8a8f98"
+        return "#636e72"
     return "#b2bec3"
 
 
 def _event_icon(event: str) -> str:
-    """Short ASCII icon for event types."""
+    """Short glyph for event types (Windows Terminal / Cascadia safe)."""
     e = event.lower()
     if "quarantine" in e or "tripwire" in e:
-        return "[!]"
+        return "■"
     if "denied" in e or "deny" in e or "refused" in e:
-        return "[X]"
+        return "✗"
     if "escalat" in e:
-        return "[?]"
+        return "▲"
     if "approved" in e or "approve" in e:
-        return "[+]"
+        return "✓"
     if "unfreeze" in e:
-        return "[^]"
+        return "⏸"
     if e.startswith("ai_") or "intent" in e or "judge" in e:
-        return "\\[AI]"
-    return "[ ]"
+        return "◆"
+    return "●"
+
+
+def _event_badge(event: str) -> str:
+    """Short badge label for the event feed."""
+    e = event.lower()
+    if "quarantine" in e or "tripwire" in e:
+        return "FROZEN"
+    if "denied" in e or "deny" in e or "refused" in e:
+        return "DENY"
+    if "escalat" in e:
+        return "WAIT"
+    if "approved" in e or "approve" in e:
+        return "APPROVE"
+    if "unfreeze" in e:
+        return "RESUME"
+    if e.startswith("ai_") or "intent" in e or "judge" in e:
+        return "AI"
+    if "allowed" in e or "allow" in e:
+        return "ALLOW"
+    return "EVENT"
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +252,31 @@ def _read_explanation(layout: Any, record: dict[str, Any]) -> str | None:
     except (OSError, ValueError):
         pass
     return None
+
+
+def _format_freeze_time(qdata: dict) -> str:
+    """Return HH:MM for when the workspace froze, or "?".
+
+    quarantine.json may carry ``since`` (ISO string), ``stopped_at`` /
+    ``frozen_at`` / ``ts`` (epoch float).  Never raises: a bad value must
+    not crash the dashboard at the moment the human needs it.
+    """
+    for key in ("since", "frozen_at", "stopped_at", "ts"):
+        val = qdata.get(key)
+        if val in (None, "", 0):
+            continue
+        try:
+            if isinstance(val, (int, float)):
+                return time.strftime("%H:%M", time.localtime(float(val)))
+            if isinstance(val, str):
+                try:
+                    return time.strftime("%H:%M", time.localtime(float(val)))
+                except ValueError:
+                    import datetime as _dt
+                    return _dt.datetime.fromisoformat(val).strftime("%H:%M")
+        except (ValueError, OverflowError, OSError, TypeError):
+            continue
+    return "?"
 
 
 def _read_quarantine_explanation(layout: Any) -> str | None:
@@ -312,6 +357,35 @@ def _format_event(ev: dict[str, Any], etype: str) -> str:
     if ev.get("reviewer_id"):
         extra += f" by {ev['reviewer_id']}"
     return f"{etype}{extra}"
+
+
+def _format_feed_line(ev: dict[str, Any], etype: str) -> str:
+    """Compact one-line description for the event feed (badge shows type)."""
+    e = etype.lower()
+    rid = _short_id(ev.get("request_id", "")) if ev.get("request_id") else ""
+
+    if e == "intent_error":
+        err = ev.get("error", "unknown")
+        return f"AI judge unavailable ({_safe(str(err), 40)})"
+
+    if e == "typosquat_escalated":
+        pkg = ev.get("package", "")
+        target = ev.get("target", "")
+        if pkg and target:
+            return f"{_safe(pkg, 20)} looks like {_safe(target, 20)}"
+        return _safe(ev.get("command", rid), 50)
+
+    # For other events: command + reviewer, no event-type prefix
+    cmd = _safe(ev.get("command", ""), 45)
+    reviewer = ev.get("reviewer_id", "")
+    parts: list[str] = []
+    if rid:
+        parts.append(rid)
+    if cmd:
+        parts.append(cmd)
+    if reviewer:
+        parts.append(f"by {reviewer}")
+    return " ".join(parts) if parts else etype
 
 
 # ---------------------------------------------------------------------------
@@ -496,6 +570,7 @@ class HaltwireApp(App[None]):
         self._layout: Any = None
         self._pending: list[dict[str, Any]] = []
         self._selected_rid: str | None = None
+        self._event_stats: dict[str, int] = {"allowed": 0, "denied": 0, "ai": 0}
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="header-bar"):
@@ -503,13 +578,18 @@ class HaltwireApp(App[None]):
             yield Static("", id="header-path")
             yield Static("", id="header-status")
             yield Static("", id="header-ai")
+        yield Static("", id="stats-strip")
         yield Static("", id="frozen-banner", classes="banner-hidden")
         yield Static("", id="tainted-banner", classes="banner-hidden")
         with Horizontal(id="main-area"):
-            yield DataTable(id="escalation-table")
+            with Vertical(id="left-column"):
+                with Vertical(id="pending-panel"):
+                    yield DataTable(id="escalation-table")
+                    yield Static("", id="pending-empty", classes="hidden")
+                with Vertical(id="feed-panel"):
+                    yield Static("", id="event-feed")
             with VerticalScroll(id="detail-scroll", can_focus=True):
                 yield Static("", id="detail-pane")
-        yield Static("", id="event-feed")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -531,13 +611,18 @@ class HaltwireApp(App[None]):
             _short_path(str(self._layout.root))
         )
 
+        # Panel border titles
+        self.query_one("#pending-panel", Vertical).border_title = "Waiting for you"
+        self.query_one("#detail-scroll", VerticalScroll).border_title = "Details"
+        self.query_one("#feed-panel", Vertical).border_title = "Live activity"
+
         table = self.query_one("#escalation-table", DataTable)
         # Fixed-width columns: ID(9)+Age(5)+Tool(6)+Reason(14)+AI(4) = 38
         # Plus ~6 for cell padding/borders. Command gets the rest.
         table.add_column("ID", width=8)
         table.add_column("Age", width=4)
         table.add_column("Tool", width=5)
-        table.add_column("Command", width=30)
+        table.add_column("Command", width=22)
         table.add_column("Reason", width=14)
         table.add_column("AI", width=4)
         table.cursor_type = "row"
@@ -548,10 +633,17 @@ class HaltwireApp(App[None]):
     def _do_refresh(self) -> None:
         if self._layout is None:
             return
-        self._refresh_header()
-        self._refresh_banners()
-        self._refresh_pending()
-        self._refresh_events()
+        # Each panel refreshes independently: a bad record or file must never
+        # take the whole dashboard down while a human is watching it.
+        for _refresh in (self._refresh_header, self._refresh_banners,
+                         self._refresh_pending, self._refresh_events,
+                         self._refresh_stats):
+            try:
+                _refresh()
+            except Exception as exc:  # noqa: BLE001
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "dashboard refresh %s failed: %s", _refresh.__name__, exc)
 
     # --- header ---
 
@@ -584,10 +676,10 @@ class HaltwireApp(App[None]):
         from sandbox.connector.aikey import get_key, key_source
         ks = key_source()
         if ks:
-            ai_w.update(f" AI ON - key: {ks} ")
+            ai_w.update(" AI judge: on ")
             ai_w.set_classes("ai-on")
         else:
-            ai_w.update(" AI: no key -- press k ")
+            ai_w.update(" AI: off - press k ")
             ai_w.set_classes("ai-nokey")
 
     # --- banners ---
@@ -607,36 +699,24 @@ class HaltwireApp(App[None]):
                 qdata = json.loads(qf.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 qdata = {}
-            # Fixed prefix with the action hint first so it never gets cut
-            prefix = " WORKSPACE FROZEN (press u to unfreeze)"
-            # What tripped
+            # Line 1: action hint (always visible, never truncated)
+            line1 = "WORKSPACE FROZEN -- press u to unfreeze"
+            # Line 2: what tripped + optional AI summary
             trigger = qdata.get("trigger", "")
-            ts = qdata.get("frozen_at", qdata.get("since", qdata.get("ts", 0)))
-            ts_str = time.strftime("%H:%M", time.localtime(ts)) if ts else "?"
+            ts_str = _format_freeze_time(qdata)
             what = trigger or qdata.get("reason", qdata.get("trip_kind", "tripwire"))
-            detail = f" -- {what} at {ts_str}"
-            # AI explanation first sentence
+            line2 = f"{what} at {ts_str}"
             ai_text = _read_quarantine_explanation(self._layout)
-            ai_part = ""
             if ai_text and qdata.get("explanation_id"):
                 first_sentence = ai_text.split(".")[0].strip()
                 if first_sentence:
-                    ai_part = f" -- AI: {first_sentence}"
-            # Truncate to fit width (use console size or 120 default)
-            try:
-                width = self.size.width or 120
-            except Exception:
-                width = 120
-            budget = width - len(prefix) - 1
-            tail = detail + ai_part
-            if len(tail) > budget:
-                tail = tail[: max(budget - 3, 0)] + "..."
-            frozen_b.update(prefix + tail)
+                    line2 += f"  |  AI: {first_sentence}"
+            frozen_b.update(f" {line1}\n {line2}")
             frozen_b.remove_class("banner-hidden")
             tainted_b.add_class("banner-hidden")
         elif taint_file.is_file():
             tainted_b.update(
-                " TAINTED (press u to clear) -- canary seen in output -- network calls need approval "
+                " TAINTED -- press u to clear | canary seen in output | network calls need approval "
             )
             tainted_b.remove_class("banner-hidden")
             frozen_b.add_class("banner-hidden")
@@ -652,7 +732,10 @@ class HaltwireApp(App[None]):
         Shows a green "All clear" header plus the last 5 decisions from the
         done directory so the reviewer can see recent activity.
         """
-        parts: list[str] = ["[bold green]All clear -- no pending approvals[/]\n"]
+        parts: list[str] = [
+            "[bold #00b894]All clear[/]",
+            "[#636e72]Nothing pending -- agent is running freely.[/]\n",
+        ]
         if self._layout:
             done_dir = self._layout.done_dir
             if done_dir.is_dir():
@@ -673,8 +756,9 @@ class HaltwireApp(App[None]):
                             cmd = rec.get("command", "")[:40]
                             reviewer = rec.get("reviewer_id", "?")
                             dc = "green" if "approv" in str(decision).lower() else "red"
+                            icon = "✓" if "approv" in str(decision).lower() else "✗"
                             parts.append(
-                                f"  [{dc}]{decision}[/{dc}] {_safe(cmd, 40)} by {reviewer}"
+                                f"  [{dc}]{icon} {decision}[/{dc}] {_safe(cmd, 40)} by {reviewer}"
                             )
                         except (OSError, json.JSONDecodeError):
                             pass
@@ -691,9 +775,37 @@ class HaltwireApp(App[None]):
         table = self.query_one("#escalation-table", DataTable)
         table.clear()
 
+        # Update panel title with count
+        try:
+            panel = self.query_one("#pending-panel", Vertical)
+            n = len(self._pending)
+            panel.border_title = f"Waiting for you ({n})" if n else "Waiting for you"
+        except Exception:
+            pass
+
+        # Toggle empty-state message
+        try:
+            empty_w = self.query_one("#pending-empty", Static)
+            if not self._pending:
+                empty_w.update(
+                    "[#636e72]  Nothing waiting -- agent running freely[/]"
+                )
+                empty_w.remove_class("hidden")
+            else:
+                empty_w.add_class("hidden")
+        except Exception:
+            pass
+
         if not self._pending:
             detail = self.query_one("#detail-pane", Static)
             detail.update(self._all_clear_text())
+            # Reset detail panel border
+            try:
+                ds = self.query_one("#detail-scroll", VerticalScroll)
+                ds.border_title = "Details"
+                ds.styles.border = ("solid", "#2d3436")
+            except Exception:
+                pass
             return
 
         for rec in self._pending:
@@ -713,7 +825,7 @@ class HaltwireApp(App[None]):
                 _short_id(rid),
                 _age(ts),
                 tool,
-                cmd[:27] + ("..." if len(cmd) > 27 else ""),
+                cmd[:19] + ("..." if len(cmd) > 19 else ""),
                 reason,
                 ai_flag,
                 key=rid,
@@ -744,15 +856,36 @@ class HaltwireApp(App[None]):
 
     def _show_detail(self, rec: dict[str, Any]) -> None:
         detail = self.query_one("#detail-pane", Static)
+
+        # Update detail panel border colour by severity
+        risk = rec.get("risk", {})
+        band = str(risk.get("band", "")).upper()
+        try:
+            ds = self.query_one("#detail-scroll", VerticalScroll)
+            if band == "CRITICAL":
+                ds.styles.border = ("solid", "#d63031")
+                ds.border_title = f"Details -- {band}"
+            elif band == "HIGH":
+                ds.styles.border = ("solid", "#e17055")
+                ds.border_title = f"Details -- {band}"
+            elif band == "MEDIUM":
+                ds.styles.border = ("solid", "#fdcb6e")
+                ds.border_title = f"Details -- {band}"
+            else:
+                ds.styles.border = ("solid", "#2d3436")
+                ds.border_title = "Details"
+        except Exception:
+            pass
+
         parts: list[str] = []
 
         rid = rec.get("request_id", "?")
-        parts.append(f"[bold #0fbcf9]Request:[/] {rid}\n")
+        parts.append(f"[bold #0fbcf9]Request:[/] {rid}")
 
         # Command
         cmd = rec.get("command", rec.get("path", rec.get("url", "")))
         parts.append(f"[bold]Command:[/]")
-        parts.append(f"[on #2d3436] {_safe(cmd, 300)} [/]\n")
+        parts.append(f"[on #2d3436] {_safe(cmd, 300)} [/]")
 
         # Why stopped
         triggers = rec.get("trigger", [])
@@ -787,22 +920,19 @@ class HaltwireApp(App[None]):
         # Explanation text (labelled as AI advisory per F3)
         explanation = _read_explanation(self._layout, rec)
         if explanation:
-            parts.append(f"\n[bold #a29bfe]AI analysis (Gemini, advisory -- verify before approving):[/]")
-            parts.append(f"[dim #a29bfe]{_safe(explanation, 500)}[/]")
+            parts.append(f"[bold #a29bfe]AI analysis (advisory):[/]")
+            parts.append(f"[dim #a29bfe]{_safe(explanation, 400)}[/]")
 
         # Agent description
         if rec.get("described_as"):
-            parts.append(f"\n[bold]Agent says:[/] {_safe(rec['described_as'])}")
+            parts.append(f"[bold]Agent says:[/] {_safe(rec['described_as'])}")
 
-        # Action hint + scroll hint
-        parts.append(f"\n[#8a8f98]\\[a] approve  \\[d] deny[/]")
-        # Count newlines to estimate whether the content overflows the pane
-        content = "\n".join(parts)
-        if content.count("\n") > 15:
-            parts.append("[#8a8f98](scroll for more)[/]")
-            content = "\n".join(parts)
-
-        detail.update(content)
+        # Action keys (prominent button-style)
+        parts.append(
+            "[bold white on #0984e3] a [/] [bold]APPROVE[/]    "
+            "[bold white on #d63031] d [/] [bold]DENY[/]"
+        )
+        detail.update("\n".join(parts))
 
     # --- event feed ---
 
@@ -828,11 +958,34 @@ class HaltwireApp(App[None]):
                         pass
 
         events.sort(key=lambda e: e.get("ts", e.get("timestamp", 0)))
-        events = events[-20:]
+
+        # Compute stats from all events (before slicing for display)
+        stats: dict[str, int] = {"allowed": 0, "denied": 0, "ai": 0}
+        for ev in events:
+            et = ev.get("event", ev.get("type", "")).lower()
+            if "allowed" in et or "allow" in et:
+                stats["allowed"] += 1
+            if "denied" in et or "refuse" in et:
+                stats["denied"] += 1
+            if et.startswith("ai_") or "intent" in et:
+                stats["ai"] += 1
+        self._event_stats = stats
+
+        events = events[-30:]
+
+        # Update feed panel title
+        try:
+            fp = self.query_one("#feed-panel", Vertical)
+            fp.border_title = f"Live activity ({len(events)})"
+        except Exception:
+            pass
 
         feed = self.query_one("#event-feed", Static)
         if not events:
-            feed.update("[#8a8f98]No audit events yet.[/]")
+            feed.update(
+                "[#636e72]No activity recorded yet.  "
+                "Waiting for the agent to start...[/]"
+            )
             return
 
         lines: list[str] = []
@@ -842,12 +995,34 @@ class HaltwireApp(App[None]):
             ts_str = time.strftime("%H:%M:%S", time.localtime(ts)) if ts else "??:??:??"
             colour = _event_colour(etype)
             icon = _event_icon(etype)
+            badge = _event_badge(etype)
+            desc = _format_feed_line(ev, etype)
+            lines.append(
+                f"[#8a8f98]{ts_str}[/]  [{colour}]{icon} {badge:<7s}[/{colour}]  {desc}"
+            )
 
-            # Build a readable description based on event type
-            desc = _format_event(ev, etype)
-            lines.append(f"[#8a8f98]{ts_str}[/] [{colour}]{icon} {desc}[/{colour}]")
+        feed.update("\n".join(lines[-20:]))
 
-        feed.update("\n".join(lines[-6:]))
+    # --- stats strip ---
+
+    def _refresh_stats(self) -> None:
+        """Update the stats strip with counts from audit + pending queue."""
+        strip = self.query_one("#stats-strip", Static)
+        allowed = self._event_stats.get("allowed", 0)
+        denied = self._event_stats.get("denied", 0)
+        waiting = len(self._pending)
+        ai = self._event_stats.get("ai", 0)
+
+        parts: list[str] = []
+        parts.append(f"[#00b894]✓ {allowed} allowed[/]")
+        parts.append(f"[#d63031]✗ {denied} denied[/]")
+        if waiting > 0:
+            parts.append(f"[bold #fdcb6e]▲ {waiting} waiting[/]")
+        else:
+            parts.append(f"[#636e72]▲ 0 waiting[/]")
+        if ai > 0:
+            parts.append(f"[#a29bfe]◆ {ai} AI[/]")
+        strip.update("  " + "    ".join(parts))
 
     # --- actions ---
 

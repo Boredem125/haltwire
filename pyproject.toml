@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "haltwire"
-version = "0.1.3"
+version = "0.1.4"
 description = "Deterministic authorization, dual-control approval and signed audit for AI coding agents"
 requires-python = ">=3.12"
 license = { text = "MIT" }

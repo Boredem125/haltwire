@@ -434,11 +434,11 @@ def _doctor_hook_check(layout) -> None:
                 input=payload, capture_output=True, text=True, timeout=15,
             )
         else:
-            # Legacy shell form
-            proc = _sp.run(
-                cmd, input=payload, capture_output=True, text=True,
-                timeout=15, shell=True,
-            )
+            # Legacy shell-form hook -- refuse to execute through a shell
+            # (subprocess-shell-true risk).  The user should re-run init.
+            click.echo("Hook check: legacy shell-form hook detected; "
+                       "re-run `haltwire init` to upgrade to exec form.", err=True)
+            return
         if proc.returncode == 0:
             try:
                 out = _json.loads(proc.stdout)
